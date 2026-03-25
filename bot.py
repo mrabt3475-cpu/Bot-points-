@@ -1,6 +1,6 @@
 """
-🤖 Enhanced Crypto Wallet Bot + Random Chat
-بوت محفظة إلكترونية مع نظام نقاط ونظام تواصل عشوائي
+🤖 Crypto Wallet Bot + Random Chat + Paid Messages + Gifts
+بوت محفظة مع تواصل عشوائي ورسائل مدفوعة ونظام هدايا
 """
 
 import os
@@ -10,12 +10,12 @@ import hmac
 import random
 import string
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field, asdict
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, ChatJoinRequestHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputSticker, InputMediaPhoto, InputMediaVideo
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes
 
 # ==================== CONFIG ====================
 @dataclass
@@ -24,16 +24,18 @@ class Config:
     BINANCE_API_KEY: str = ""
     BINANCE_SECRET_KEY: str = ""
     MAX_WITHDRAWAL_DAILY: float = 1000.0
-    MAX_TRANSACTION_PER_DAY: int = 50
     MIN_DEPOSIT: float = 1.0
     POINTS_PER_USDT: int = 100
     REFERRAL_BONUS: int = 20
     REFERRAL_COMMISSION: float = 0.10
-    NETWORK_FEE: float = 1.0
     WITHDRAWAL_FEE: float = 1.0
-    # إعدادات التواصل العشوائي
-    CHAT_TIMEOUT: int = 300  # 5 دقائق
+    CHAT_TIMEOUT: int = 300
     MAX_CHATS_PER_DAY: int = 20
+    # إعدادات الرسائل المدفوعة
+    PRIVATE_MESSAGE_COST: int = 10  # نقاط
+    GIFT_COST_MIN: int = 5
+    GIFT_COST_MAX: int = 100
+    ADMIN_MESSAGE_COST: int = 50
 
 config = Config()
 
@@ -45,6 +47,9 @@ class TransactionType(Enum):
     REFERRAL_BONUS = "referral_bonus"
     PURCHASE = "purchase"
     COMMISSION = "commission"
+    PRIVATE_MESSAGE = "private_message"
+    GIFT_SENT = "gift_sent"
+    GIFT_RECEIVED = "gift_received"
 
 class TransactionStatus(Enum):
     PENDING = "pending"
@@ -65,6 +70,14 @@ class ChatStatus(Enum):
     WAITING = "waiting"
     CHATTING = "chatting"
     BLOCKED = "blocked"
+
+class GiftType(Enum):
+    STICKER = "sticker"
+    PHOTO = "photo"
+    VIDEO = "video"
+    VOICE = "voice"
+    CHANNEL = "channel"
+    ADMIN = "admin"
 
 # ==================== DATA CLASSES ====================
 @dataclass
@@ -101,32 +114,59 @@ class User:
     is_verified: bool = False
     is_banned: bool = False
     is_admin: bool = False
+    is_premium: bool = False  # مستخدم مميز
+    is_model: bool = False   # مشهور/مودل
     daily_withdrawal: float = 0.0
-    daily_transactions: int = 0
-    last_transaction_date: str = ""
     join_date: str = field(default_factory=lambda: datetime.now().isoformat())
     last_active: str = field(default_factory=lambda: datetime.now().isoformat())
-    failed_attempts: int = 0
     pin_code: str = ""
     # إعدادات التواصل
     chat_status: str = "idle"
     current_chat_partner: int = None
     chats_today: int = 0
     last_chat_date: str = ""
-    gender: str = ""  # male, female, other
+    gender: str = ""
     age: int = 0
     bio: str = ""
+    # إعدادات الرسائل المدفوعة
+    accept_private_messages: bool = True
+    private_message_price: int = 10
+    accept_gifts: bool = True
+    total_gifts_received: int = 0
+    total_gifts_value: int = 0
 
 @dataclass
-class ChatSession:
+class Gift:
     id: str
-    user1_id: int
-    user2_id: int
-    started_at: str
-    ended_at: str = ""
-    messages_count: int = 0
-    user1_rating: int = 0
-    user2_rating: int = 0
+    sender_id: int
+    receiver_id: int
+    gift_type: str
+    value: int  # قيمة الهدية بالنقاط
+    message: str = ""
+    sticker_file_id: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+@dataclass
+class PrivateMessage:
+    id: str
+    sender_id: int
+    receiver_id: int
+    message: str
+    cost: int
+    is_read: bool = False
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+@dataclass
+class Channel:
+    id: str
+    name: str
+    username: str = ""
+    invite_link: str = ""
+    description: str = ""
+    owner_id: int = 0
+    is_premium: bool = False
+    members_count: int = 0
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
 # ==================== DATABASE ====================
 class Database:
@@ -135,6 +175,9 @@ class Database:
         self.transactions_file = "transactions.json"
         self.chats_file = "chats.json"
         self.waiting_file = "waiting.json"
+        self.gifts_file = "gifts.json"
+        self.private_messages_file = "private_messages.json"
+        self.channels_file = "channels.json"
     
     def load_users(self) -> Dict:
         try:
@@ -179,6 +222,39 @@ class Database:
     def save_waiting(self, waiting: List):
         with open(self.waiting_file, "w") as f:
             json.dump(waiting, f, ensure_ascii=False, indent=2)
+    
+    def load_gifts(self) -> List:
+        try:
+            with open(self.gifts_file, "r") as f:
+                return json.load(f)
+        except:
+            return []
+    
+    def save_gifts(self, gifts: List):
+        with open(self.gifts_file, "w") as f:
+            json.dump(gifts, f, ensure_ascii=False, indent=2)
+    
+    def load_private_messages(self) -> List:
+        try:
+            with open(self.private_messages_file, "r") as f:
+                return json.load(f)
+        except:
+            return []
+    
+    def save_private_messages(self, messages: List):
+        with open(self.private_messages_file, "w") as f:
+            json.dump(messages, f, ensure_ascii=False, indent=2)
+    
+    def load_channels(self) -> List:
+        try:
+            with open(self.channels_file, "r") as f:
+                return json.load(f)
+        except:
+            return []
+    
+    def save_channels(self, channels: List):
+        with open(self.channels_file, "w") as f:
+            json.dump(channels, f, ensure_ascii=False, indent=2)
 
 db = Database()
 
@@ -191,6 +267,15 @@ def generate_transaction_id() -> str:
 
 def generate_chat_id() -> str:
     return "CHAT-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=12))
+
+def generate_gift_id() -> str:
+    return "GIFT-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
+
+def generate_message_id() -> str:
+    return "MSG-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=12))
+
+def generate_channel_id() -> str:
+    return "CH-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
 def generate_wallet_address() -> str:
     return "0x" + "".join(random.choices("0123456789abcdef", k=40))
@@ -211,24 +296,19 @@ def update_user(user_id: int, data: Dict):
         db.save_users(users)
 
 def get_user_level(points: int) -> UserLevel:
-    if points >= 100000:
-        return UserLevel.DIAMOND
-    elif points >= 50000:
-        return UserLevel.PLATINUM
-    elif points >= 20000:
-        return UserLevel.GOLD
-    elif points >= 10000:
-        return UserLevel.SILVER
-    elif points >= 5000:
-        return UserLevel.BRONZE
+    if points >= 100000: return UserLevel.DIAMOND
+    elif points >= 50000: return UserLevel.PLATINUM
+    elif points >= 20000: return UserLevel.GOLD
+    elif points >= 10000: return UserLevel.SILVER
+    elif points >= 5000: return UserLevel.BRONZE
     return UserLevel.NEW
 
 def get_level_bonus(level: UserLevel) -> float:
     bonuses = {UserLevel.NEW: 0.0, UserLevel.BRONZE: 0.02, UserLevel.SILVER: 0.05, UserLevel.GOLD: 0.10, UserLevel.PLATINUM: 0.15, UserLevel.DIAMOND: 0.20}
     return bonuses.get(level, 0.0)
 
-def create_transaction(user_id: int, txn_type: TransactionType, amount: float, fee: float = 0.0, tx_hash: str = "", address: str = "", recipient_id: int = None, description: str = "") -> Transaction:
-    txn = Transaction(id=generate_transaction_id(), user_id=user_id, type=txn_type.value, amount=amount, fee=fee, status=TransactionStatus.PENDING.value, tx_hash=tx_hash, address=address, recipient_id=recipient_id, description=description)
+def create_transaction(user_id: int, txn_type: TransactionType, amount: float, fee: float = 0.0, recipient_id: int = None, description: str = "") -> Transaction:
+    txn = Transaction(id=generate_transaction_id(), user_id=user_id, type=txn_type.value, amount=amount, fee=fee, status=TransactionStatus.PENDING.value, recipient_id=recipient_id, description=description)
     transactions = db.load_transactions()
     transactions.append(asdict(txn))
     db.save_transactions(transactions)
@@ -248,10 +328,9 @@ def get_user_transactions(user_id: int, limit: int = 10) -> List:
     user_txns = [t for t in transactions if t["user_id"] == user_id]
     return sorted(user_txns, key=lambda x: x["created_at"], reverse=True)[:limit]
 
-# ==================== RANDOM CHAT SYSTEM ====================
+# ==================== RANDOM CHAT ====================
 def add_to_waiting(user_id: int, gender: str = "") -> None:
     waiting = db.load_waiting()
-    # إزالة المستخدم إذا كان موجوداً
     waiting = [w for w in waiting if w["user_id"] != user_id]
     waiting.append({"user_id": user_id, "gender": gender, "added_at": datetime.now().isoformat()})
     db.save_waiting(waiting)
@@ -262,96 +341,198 @@ def remove_from_waiting(user_id: int) -> None:
     db.save_waiting(waiting)
 
 def find_match(user_id: int, preferred_gender: str = "") -> Optional[int]:
-    """البحث عن مستخدم مطابق"""
     waiting = db.load_waiting()
-    
-    # فلترة حسب الجنس المفضل
     if preferred_gender:
         matches = [w for w in waiting if w["user_id"] != user_id and w.get("gender") == preferred_gender]
     else:
         matches = [w for w in waiting if w["user_id"] != user_id]
-    
     if matches:
         return matches[0]["user_id"]
     return None
 
-def create_chat_session(user1_id: int, user2_id: int) -> ChatSession:
-    session = ChatSession(
-        id=generate_chat_id(),
-        user1_id=user1_id,
-        user2_id=user2_id,
-        started_at=datetime.now().isoformat()
+def create_chat_session(user1_id: int, user2_id: int) -> None:
+    session = {"id": generate_chat_id(), "user1_id": user1_id, "user2_id": user2_id, "started_at": datetime.now().isoformat()}
+    chats = db.load_chats()
+    chats.append(session)
+    db.save_chats(chats)
+
+# ==================== GIFTS SYSTEM ====================
+GIFTS = {
+    # ستكرز
+    "sticker_rose": {"name": "🌹 وردة", "emoji": "🌹", "price": 5},
+    "sticker_heart": {"name": "❤️ قلب", "emoji": "❤️", "price": 10},
+    "sticker_fire": {"name": "🔥 نار", "emoji": "🔥", "price": 15},
+    "sticker_star": {"name": "⭐ نجمة", "emoji": "⭐", "price": 20},
+    "sticker_crown": {"name": "👑 تاج", "emoji": "👑", "price": 50},
+    "sticker_diamond": {"name": "💎 ماسة", "emoji": "💎", "price": 100},
+    
+    # هدايا خاصة
+    "gift_coffee": {"name": "☕ قهوة", "emoji": "☕", "price": 15},
+    "gift_chocolate": {"name": "🍫 شوكولاتة", "emoji": "🍫", "price": 20},
+    "gift_cake": {"name": "🎂 كيك", "emoji": "🎂", "price": 30},
+    "gift_ring": {"name": "💍 خاتم", "emoji": "💍", "price": 75},
+    "gift_car": {"name": "🚗 سيارة", "emoji": "🚗", "price": 150},
+    "gift_house": {"name": "🏠 فيلا", "emoji": "🏠", "price": 300},
+    
+    # هدايا خاصة للأدمن
+    "admin_badge": {"name": "🏅 شارة إدارية", "emoji": "🏅", "price": 200},
+    "admin_shield": {"name": "🛡️ درع", "emoji": "🛡️", "price": 250},
+}
+
+def send_gift(sender_id: int, receiver_id: int, gift_key: str, message: str = "") -> Tuple[bool, str]:
+    """إرسال هدية"""
+    if gift_key not in GIFTS:
+        return False, "الهدية غير موجودة"
+    
+    gift_info = GIFTS[gift_key]
+    price = gift_info["price"]
+    
+    sender = get_user(sender_id)
+    receiver = get_user(receiver_id)
+    
+    if sender.points < price:
+        return False, f"نقاطك غير كافية! تحتاج {price} نقطة"
+    
+    if not receiver.accept_gifts:
+        return False, "المستخدم لا يقبل الهدايا"
+    
+    # خصم نقاط المرسل
+    update_user(sender_id, {"points": sender.points - price})
+    
+    # إضافة نقاط للمستلم (80% من القيمة)
+    receiver_earnings = int(price * 0.8)
+    update_user(receiver_id, {
+        "points": receiver.points + receiver_earnings,
+        "total_gifts_received": receiver.total_gifts_received + 1,
+        "total_gifts_value": receiver.total_gifts_value + price
+    })
+    
+    # تسجيل الهدية
+    gift = Gift(
+        id=generate_gift_id(),
+        sender_id=sender_id,
+        receiver_id=receiver_id,
+        gift_type=gift_key,
+        value=price,
+        message=message
     )
-    chats = db.load_chats()
-    chats.append(asdict(session))
-    db.save_chats(chats)
-    return session
-
-def end_chat_session(chat_id: str):
-    chats = db.load_chats()
-    for chat in chats:
-        if chat["id"] == chat_id:
-            chat["ended_at"] = datetime.now().isoformat()
-            break
-    db.save_chats(chats)
-
-def get_active_chat(user_id: int) -> Optional[Tuple[int, str]]:
-    """الحصول على المحادثة النشطة للمستخدم"""
-    user = get_user(user_id)
-    if user.chat_status == "chatting" and user.current_chat_partner:
-        return (user.current_chat_partner, user.current_chat_partner)
-    return None
-
-# ==================== BINANCE API ====================
-class BinanceAPI:
-    def __init__(self):
-        self.base_url = "https://api.binance.com"
-        self.api_key = config.BINANCE_API_KEY
-        self.secret_key = config.BINANCE_SECRET_KEY
+    gifts = db.load_gifts()
+    gifts.append(asdict(gift))
+    db.save_gifts(gifts)
     
-    def _sign(self, params: str) -> str:
-        return hmac.new(self.secret_key.encode(), params.encode(), hashlib.sha256).hexdigest()
+    # تسجيل المعاملة
+    create_transaction(sender_id, TransactionType.GIFT_SENT, price, description=f"هدية {gift_info['name']} لـ {receiver_id}")
+    create_transaction(receiver_id, TransactionType.GIFT_RECEIVED, receiver_earnings, description=f"استلام هدية من {sender_id}")
     
-    async def get_deposit_address(self, network: str = "TRC20") -> Dict:
-        if not self.api_key:
-            return {"address": generate_wallet_address(), "network": network, "success": True, "test_mode": True}
-        return {"address": generate_wallet_address(), "network": network, "success": True}
-    
-    async def check_deposit(self, address: str, tx_hash: str = "") -> Dict:
-        if not self.api_key:
-            return {"confirmed": True, "amount": 10.0, "tx_hash": tx_hash or generate_transaction_id()}
-        return {"confirmed": True, "amount": 10.0, "tx_hash": tx_hash}
-    
-    async def withdraw(self, address: str, amount: float, network: str = "TRC20") -> Dict:
-        if not self.api_key:
-            return {"success": True, "tx_hash": generate_transaction_id()}
-        return {"success": False, "message": "API not configured"}
+    return True, f"✅ تم إرسال {gift_info['emoji']} {gift_info['name']}!"
 
-binance = BinanceAPI()
+def get_user_gifts(user_id: int) -> List:
+    gifts = db.load_gifts()
+    user_gifts = [g for g in gifts if g["sender_id"] == user_id or g["receiver_id"] == user_id]
+    return sorted(user_gifts, key=lambda x: x["created_at"], reverse=True)[:20]
+
+# ==================== PRIVATE MESSAGES ====================
+def send_private_message(sender_id: int, receiver_id: int, message: str) -> Tuple[bool, str]:
+    """إرسال رسالة خاصة مدفوعة"""
+    receiver = get_user(receiver_id)
+    
+    if not receiver.accept_private_messages:
+        return False, "المستخدم لا يقبل رسائل خاصة"
+    
+    cost = receiver.private_message_price
+    sender = get_user(sender_id)
+    
+    if sender.points < cost:
+        return False, f"نقاطك غير كافية! ثمن الرسالة: {cost} نقطة"
+    
+    # خصم النقاط
+    update_user(sender_id, {"points": sender.points - cost})
+    
+    # إرسال 80% للمستلم
+    receiver_earnings = int(cost * 0.8)
+    update_user(receiver_id, {"points": receiver.points + receiver_earnings})
+    
+    # تسجيل الرسالة
+    msg = PrivateMessage(
+        id=generate_message_id(),
+        sender_id=sender_id,
+        receiver_id=receiver_id,
+        message=message,
+        cost=cost
+    )
+    messages = db.load_private_messages()
+    messages.append(asdict(msg))
+    db.save_private_messages(messages)
+    
+    # تسجيل المعاملة
+    create_transaction(sender_id, TransactionType.PRIVATE_MESSAGE, cost, description=f"رسالة خاصة لـ {receiver_id}")
+    
+    return True, f"✅ تم إرسال الرسالة! ({cost} نقطة)"
+
+def get_user_messages(user_id: int) -> List:
+    messages = db.load_private_messages()
+    user_msgs = [m for m in messages if m["receiver_id"] == user_id]
+    return sorted(user_msgs, key=lambda x: x["created_at"], reverse=True)[:20]
+
+# ==================== CHANNELS ====================
+def create_channel(owner_id: int, name: str, description: str = "") -> Channel:
+    channel = Channel(
+        id=generate_channel_id(),
+        name=name,
+        description=description,
+        owner_id=owner_id
+    )
+    channels = db.load_channels()
+    channels.append(asdict(channel))
+    db.save_channels(channels)
+    return channel
+
+def get_channels() -> List:
+    return db.load_channels()
+
+def get_popular_models() -> List[User]:
+    """الحصول على أشهر المستخدمين (الأكثر هدايا)"""
+    users = db.load_users()
+    models = [User(**u) for u in users.values() if u.get("is_model") or u.get("total_gifts_received", 0) > 0]
+    return sorted(models, key=lambda x: x.total_gifts_value, reverse=True)[:10]
 
 # ==================== KEYBOARDS ====================
 def main_menu_keyboard(user_id: int):
     user = get_user(user_id)
     level = UserLevel(user.level)
     keyboard = [
-        [InlineKeyboardButton(f"💰 الرصيد: {user.balance:.2f} USDT", callback_data="balance")],
-        [InlineKeyboardButton(f"⭐ النقاط: {user.points} | المستوى: {level.name}", callback_data="points")],
+        [InlineKeyboardButton(f"💰 الرصيد: {user.balance:.2f} USDT | ⭐ {user.points} نقطة", callback_data="balance")],
         [InlineKeyboardButton("🟢 إيداع", callback_data="deposit")],
         [InlineKeyboardButton("🔴 سحب", callback_data="withdraw")],
         [InlineKeyboardButton("📤 تحويل", callback_data="transfer")],
         [InlineKeyboardButton("🔗 الإحالة", callback_data="referral")],
-        [InlineKeyboardButton("📊 المعاملات", callback_data="transactions")],
         [InlineKeyboardButton("💬 تواصل عشوائي", callback_data="random_chat")],
+        [InlineKeyboardButton("💌 رسائل خاصة", callback_data="private_messages")],
+        [InlineKeyboardButton("🎁 الهدايا", callback_data="gifts_menu")],
+        [InlineKeyboardButton("⭐ المشاهير", callback_data="popular_models")],
         [InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")],
     ]
     if user.is_admin:
         keyboard.append([InlineKeyboardButton("👑 لوحة الأدمن", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
+def gifts_keyboard():
+    keyboard = []
+    row = []
+    for i, (key, gift) in enumerate(GIFTS.items()):
+        row.append(InlineKeyboardButton(f"{gift['emoji']} {gift['price']}ن", callback_data=f"gift_{key}"))
+        if len(row) == 3:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back")])
+    return InlineKeyboardMarkup(keyboard)
+
 def chat_keyboard():
     keyboard = [
         [InlineKeyboardButton("⏭️ شخص آخر", callback_data="chat_next")],
-        [InlineKeyboardButton("🛑 إنهاء المحادثة", callback_data="chat_stop")],
+        [InlineKeyboardButton("🛑 إنهاء", callback_data="chat_stop")],
         [InlineKeyboardButton("🚫 بلوك", callback_data="chat_block")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -361,24 +542,6 @@ def gender_keyboard():
         [InlineKeyboardButton("👨 رجل", callback_data="gender_male")],
         [InlineKeyboardButton("👩 امرأة", callback_data="gender_female")],
         [InlineKeyboardButton("🚻 أي", callback_data="gender_any")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def deposit_amount_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("10 USDT", callback_data="deposit_10")],
-        [InlineKeyboardButton("25 USDT", callback_data="deposit_25")],
-        [InlineKeyboardButton("50 USDT", callback_data="deposit_50")],
-        [InlineKeyboardButton("100 USDT", callback_data="deposit_100")],
-        [InlineKeyboardButton("💵 مبلغ آخر", callback_data="deposit_custom")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def confirm_keyboard(action: str):
-    keyboard = [
-        [InlineKeyboardButton("✅ تأكيد", callback_data=f"confirm_{action}")],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="cancel")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -413,414 +576,185 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     level = UserLevel(user_data.level)
     welcome = f"""🎉 مرحباً بك في Crypto Wallet +!
 
-💰 محفظتك الإلكترونية
-━━━━━━━━━━━━━━━━━━━━
-🟢 الرصيد: {user_data.balance:.2f} USDT
-⭐ النقاط: {user_data.points}
-🏆 المستوى: {level.name}
+💰 محفظتك:
+• الرصيد: {user_data.balance:.2f} USDT
+• النقاط: ⭐ {user_data.points}
+• المستوى: {level.name}
 
-💬 نظام التواصل العشوائي متاح!
-اضغط "تواصل عشوائي" للدردشة مع الغرباء
+💬 أنظمة التواصل:
+• تواصل عشوائي - مجاني
+• رسائل خاصة مدفوعة
+• إرسال هدايا
+• المشاهير والنماذج
 
-🔗 كود الإحالة:
-`{user_data.referral_code}`
-
-💡 اربح نقاط إضافية:
-• إحالة صديق: +{config.REFERRAL_BONUS} نقطة
-• 10% من كل إيداع يُجريه مُحالوك
-━━━━━━━━━━━━━━━━━━━━"""
+🔗 كود الإحالة: `{user_data.referral_code}`
+"""
     await update.message.reply_text(welcome, reply_markup=main_menu_keyboard(user_id))
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user = get_user(user_id)
     level = UserLevel(user.level)
-    bonus = get_level_bonus(level)
     
     text = f"""💰 محفظتك
-━━━━━━━━━━━━━━━━━━━━
-🟢 الرصيد المتاح: {user.balance:.2f} USDT
+━━━━━━━━━━━━━━━━
+🟢 الرصيد: {user.balance:.2f} USDT
+⭐ نقاطك: {user.points}
+🏆 مستواك: {level.name}
 
 📊 الإحصائيات:
-• 💎 نقاطك: {user.points}
-• 👥 المُحالين: {user.referrals_count}
-• 💵 إجمالي الإيداعات: {user.total_deposited:.2f} USDT
-• 💸 إجمالي السحوبات: {user.total_spent:.2f} USDT
-• 💰 أرباح الإحالة: {user.earnings:.2f} USDT
+• المُحالين: {user.referrals_count}
+• إجمالي الإيداعات: {user.total_deposited:.2f} USDT
+• أرباح الإحالة: {user.earnings:.2f} USDT
 
-🏆 مستواك: {level.name}
-🎁 bonus الإيداع: {bonus*100}%
-
-📅 تاريخ الانضمام: {user.join_date[:10]}
-━━━━━━━━━━━━━━━━━━━━"""
+🎁 الهدايا:
+• أرسلت: {user.total_gifts_received}
+• استلمت: {user.total_gifts_value} قيمة
+━━━━━━━━━━━━━━━━"""
     await update.message.reply_text(text, reply_markup=main_menu_keyboard(user_id))
 
-async def deposit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    text = f"""🟢 إيداع USDT
-
-اختر المبلغ المراد إيداعه:
-
-💵 كل 1 USDT = {config.POINTS_PER_USDT} نقطة"""
-    await update.message.reply_text(text, reply_markup=deposit_amount_keyboard())
-
-async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def private_messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user = get_user(user_id)
     
-    if user.balance < config.MIN_DEPOSIT:
-        await update.message.reply_text(f"❌ الحد الأدنى للسحب: {config.MIN_DEPOSIT} USDT\nرصيدك الحالي: {user.balance:.2f} USDT", reply_markup=main_menu_keyboard(user_id))
-        return
-    
-    text = f"""🔴 سحب USDT
+    text = f"""💌 الرسائل الخاصة
+━━━━━━━━━━━━━━━━
+ثمن الرسالة: {user.private_message_price} نقطة
+الحالة: {'✅ مقبول' if user.accept_private_messages else '❌ مغلق'}
 
-💰 الرصيد المتاح: {user.balance:.2f} USDT
+━━━━━━━━━━━━━━━━
 
-📋 الحدود:
-• الحد الأدنى: {config.MIN_DEPOSIT} USDT
-• الحد الأقصى اليوم: {config.MAX_WITHDRAWAL_DAILY} USDT
-• المسحوب اليوم: {user.daily_withdrawal:.2f} USDT
-
-💳 رسوم السحب: {config.WITHDRAWAL_FEE} USDT
-
-━━━━━━━━━━━━━━━━━━━━
-أرسل عنوان المحفظة (TRC20) والمبلغ
-مثال: 0xABC...DEF 50"""
-    await update.message.reply_text(text, reply_markup=back_keyboard())
-
-async def transfer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user = get_user(user_id)
-    
-    if user.balance < 1:
-        await update.message.reply_text("❌ رصيدك غير كافٍ للتحويل!", reply_markup=main_menu_keyboard(user_id))
-        return
-    
-    text = f"""📤 تحويل USDT
-
-💰 رصيدك: {user.balance:.2f} USDT
-
-━━━━━━━━━━━━━━━━━━━━
-الصيغة:
-تحويل [المبلغ] [كود_المستلم]
+📝 أرسل رسالة خاصة:
+`msg [كود_المستخدم] [الرسالة]`
 
 مثال:
-تحويل 10 REF-XXXXXXXX
-━━━━━━━━━━━━━━━━━━━━"""
-    await update.message.reply_text(text, reply_markup=back_keyboard())
+`msg REF-ABC123 مرحباً`
 
-async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+💡 يمكنك تغيير الثمن من الإعدادات
+"""
+    await update.message.reply_text(text, reply_markup=main_menu_keyboard(user_id))
+
+async def gifts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user = get_user(user_id)
-    bot_username = context.bot.username
-    commission = config.REFERRAL_COMMISSION * 100
     
-    text = f"""🔗 نظام الإحالة
-━━━━━━━━━━━━━━━━━━━━
-🎁 اربح {commission}% من كل إيداع يُجريه مُحالوك!
+    text = f"""🎁 نظام الهدايا
+━━━━━━━━━━━━━━━━
+نقاطك: ⭐ {user.points}
 
-📊 إحصائياتك:
-• 👥 عدد المُحالين: {user.referrals_count}
-• 💰 أرباح الإحالة: {user.earnings:.2f} USDT
+اختر هدية لإرسالها:
+"""
+    await update.message.reply_text(text, reply_markup=gifts_keyboard())
 
-━━━━━━━━━━━━━━━━━━━━
-🔗 رابط الإحالة:
-https://t.me/{bot_username}?start={user.referral_code}
-
-📋 كود الإحالة:
-`{user.referral_code}`
-━━━━━━━━━━━━━━━━━━━━"""
-    await update.message.reply_text(text, reply_markup=main_menu_keyboard(user_id))
-
-async def transactions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    txns = get_user_transactions(user_id, 10)
+async def popular_models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض المشاهير"""
+    models = get_popular_models()
     
-    if not txns:
-        text = "📊 لا توجد معاملات سابقة"
+    if not models:
+        text = "⭐ لا يوجد مشاهير بعد!\n\nكن أول مشهور!"
     else:
-        text = "📊 آخر معاملاتك:\n━━━━━━━━━━━━━━━━━━━━\n"
-        for txn in txns:
-            emoji = {"deposit": "🟢", "withdrawal": "🔴", "transfer": "📤", "referral_bonus": "🎁", "purchase": "🛒", "commission": "💰"}.get(txn["type"], "💳")
-            status = {"pending": "⏳", "completed": "✅", "failed": "❌", "cancelled": "🚫"}.get(txn["status"], "❓")
-            text += f"{emoji} **{txn['type'].upper()}**\n   المبلغ: {txn['amount']:.2f} USDT\n   الحالة: {status} {txn['status']}\n   التاريخ: {txn['created_at'][:16]}\n━━━━━━━━━━━━━━━━━━━━\n"
+        text = "⭐ المشاهير والأكثر تلقياً للهدايا:\n━━━━━━━━━━━━━━━━\n"
+        for i, model in enumerate(models, 1):
+            text += f"{i}. {model.first_name}\n"
+            text += f"   🎁 {model.total_gifts_received} هدية | 💰 {model.total_gifts_value} نقطة\n"
+            text += f"   💌 ثمن الرسالة: {model.private_message_price} نقطة\n\n"
     
-    await update.message.reply_text(text, reply_markup=main_menu_keyboard(user_id))
+    await update.message.reply_text(text, reply_markup=main_menu_keyboard(update.message.from_user.id))
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user = get_user(user_id)
     
-    gender_emoji = {"male": "👨", "female": "👩", "other": "🚻", "": "❌"}
-    
     text = f"""⚙️ الإعدادات
-━━━━━━━━━━━━━━━━━━━━
-👤 الملف الشخصي:
-• الاسم: {user.first_name} {user.last_name}
-• اليوزر: @{user.username or "غير محدد"}
+━━━━━━━━━━━━━━━━
+👤 الملف:
+• الاسم: {user.first_name}
+• الجنس: {user.gender or 'غير محدد'}
+• العمر: {user.age or 'غير محدد'}
 
-💬 إعدادات التواصل:
-• الجنس: {gender_emoji.get(user.gender, "❌")} {user.gender or "غير محدد"}
-• العمر: {user.age or "غير محدد"}
-• نبذة: {user.bio or "لا توجد"}
+💌 الرسائل الخاصة:
+• قبول الرسائل: {'✅ نعم' if user.accept_private_messages else '❌ لا'}
+• ثمن الرسالة: {user.private_message_price} نقطة
 
-🔐 الأمان:
-• حالة التحقق: {"✅ مفعل" if user.is_verified else "❌ غير مفعل"}
-• رقم PIN: {"✅ مفعل" if user.pin_code else "❌ غير مفعل"}
+🎁 الهدايا:
+• قبول الهدايا: {'✅ نعم' if user.accept_gifts else '❌ لا'}
 
-💳 المحفظة:
-• العنوان: `{user.wallet_address[:15]}...`
-━━━━━━━━━━━━━━━━━━━━"""
-    keyboard = [
-        [InlineKeyboardButton("👤 تعديل الملف", callback_data="edit_profile")],
-        [InlineKeyboardButton("🔐 تفعيل PIN", callback_data="setup_pin")],
-        [InlineKeyboardButton("✅ التحقق من الهوية", callback_data="verify")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
-    ]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+━━━━━━━━━━━━━━━━
 
-# ==================== RANDOM CHAT COMMANDS ====================
+📝 الأوامر:
+• `سعر [رقم]` - تغيير ثمن الرسالة
+• `فتح رسائل` / `غلق رسائل`
+• `فتح هدايا` / `غلق هدايا`
+• `جنس [رجل/امرأة]`
+• `عمر [رقم]`
+"""
+    await update.message.reply_text(text, reply_markup=main_menu_keyboard(user_id))
+
+# ==================== RANDOM CHAT ====================
 async def random_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """بدء البحث عن محادثة عشوائية"""
     user_id = update.message.from_user.id
     user = get_user(user_id)
     
-    # التحقق من الحد اليومي
     today = datetime.now().strftime("%Y-%m-%d")
     if user.last_chat_date != today:
         update_user(user_id, {"chats_today": 0, "last_chat_date": today})
         user = get_user(user_id)
     
     if user.chats_today >= config.MAX_CHATS_PER_DAY:
-        await update.message.reply_text(
-            f"❌ reached حد المحادثات اليومية!\n\n"
-            f"المحادثات اليوم: {user.chats_today}/{config.MAX_CHATS_PER_DAY}\n"
-            f"جرب غداً! 🌙",
-            reply_markup=main_menu_keyboard(user_id)
-        )
+        await update.message.reply_text(f"❌ reached حد المحادثات! ({user.chats_today}/{config.MAX_CHATS_PER_DAY})")
         return
     
-    # التحقق من حالة المستخدم
     if user.chat_status == "chatting":
-        await update.message.reply_text(
-            "⚠️ أنت في محادثة نشطة حالياً!\n"
-            "أختر:\n"
-            "• /stop - إنهاء المحادثة\n"
-            "• /next - شخص آخر",
-            reply_markup=chat_keyboard()
-        )
+        await update.message.reply_text("⚠️ أنت في محادثة! /stop للإنهاء")
         return
     
-    # التحقق من وجود ملف شخصي
     if not user.gender:
-        await update.message.reply_text(
-            "👋 قبل بدء المحادثة، حدد جنسك:\n\n"
-            "(هذا يساعد في إقرانك بشخص مناسب)",
-            reply_markup=gender_keyboard()
-        )
+        await update.message.reply_text("👋 حدد جنسك أولاً:", reply_markup=gender_keyboard())
         return
     
-    # إضافة للقائمة المنتظرة
     add_to_waiting(user_id, user.gender)
     update_user(user_id, {"chat_status": "waiting"})
     
-    await update.message.reply_text(
-        "🔍 جاري البحث عن شخص للدردشة...\n\n"
-        "⏳ انتظر قليلاً...
-\n"
-        "لإلغاء البحث: /cancel",
-        reply_markup=back_keyboard()
-    )
+    await update.message.reply_text("🔍 جاري البحث... /cancel للإلغاء")
     
     # البحث عن مطابق
-    await find_chat_match(update, context, user_id)
-
-async def find_chat_match(update, context, user_id: int):
-    """البحث عن مطابق"""
-    user = get_user(user_id)
-    preferred_gender = ""  # يمكن إضافة اختيار
-    
-    # البحث عن مطابق
-    match_id = find_match(user_id, preferred_gender)
-    
+    match_id = find_match(user_id)
     if match_id:
-        # إزالة كلاهما من قائمة الانتظار
         remove_from_waiting(user_id)
         remove_from_waiting(match_id)
         
-        # إنشاء جلسة محادثة
-        chat_session = create_chat_session(user_id, match_id)
+        create_chat_session(user_id, match_id)
         
-        # تحديث حالة كلا المستخدمين
-        update_user(user_id, {
-            "chat_status": "chatting",
-            "current_chat_partner": match_id
-        })
-        update_user(match_id, {
-            "chat_status": "chatting",
-            "current_chat_partner": user_id
-        })
+        update_user(user_id, {"chat_status": "chatting", "current_chat_partner": match_id})
+        update_user(match_id, {"chat_status": "chatting", "current_chat_partner": user_id})
         
-        # إشعار المستخدم الأول
         try:
-            await context.bot.send_message(
-                user_id,
-                f"🎉 تم العثور على شخص للدردشة!\n\n"
-                f"💬 ابدأ المحادثة الآن\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"⚠️ قواعد المحادثة:\n"
-                f"• احترم الآخر\n"
-                f"• لا تشارك معلومات شخصية\n"
-                f"• أي إساءة = بلوك فوري\n\n"
-                f"لإنهاء: /stop\n"
-                f"شخص آخر: /next",
-                reply_markup=chat_keyboard()
-            )
-        except:
-            pass
-        
-        # إشعار المستخدم الثاني
-        try:
-            match_user = get_user(match_id)
-            await context.bot.send_message(
-                match_id,
-                f"🎉 تم العثور على شخص للدردشة!\n\n"
-                f"💬 ابدأ المحادثة الآن\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"⚠️ قواعد المحادثة:\n"
-                f"• احترم الآخر\n"
-                f"• لا تشارك معلومات شخصية\n"
-                f"• أي إساءة = بلوك فوري\n\n"
-                f"لإنهاء: /stop\n"
-                f"شخص آخر: /next",
-                reply_markup=chat_keyboard()
-            )
+            await context.bot.send_message(user_id, "🎉 تم الإقران! ابدأ المحادثة الآن", reply_markup=chat_keyboard())
+            await context.bot.send_message(match_id, "🎉 تم الإقران! ابدأ المحادثة الآن", reply_markup=chat_keyboard())
         except:
             pass
     else:
-        # لم يتم العثور على مطابق
-        try:
-            await context.bot.send_message(
-                user_id,
-                "⏳ لا يوجد أحد حالياً...\n\n"
-                "سيتم إشعارك عند العثور على شخص.\n"
-                "لإلغاء الانتظار: /cancel"
-            )
-        except:
-            pass
+        await update.message.reply_text("⏳ لا يوجد أحد حالياً... ستصلك إشعاراً")
 
 async def stop_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إنهاء المحادثة الحالية"""
     user_id = update.message.from_user.id
     user = get_user(user_id)
     
     if user.chat_status != "chatting" or not user.current_chat_partner:
-        await update.message.reply_text(
-            "❌ لست في محادثة حالياً!",
-            reply_markup=main_menu_keyboard(user_id)
-        )
+        await update.message.reply_text("❌ لست في محادثة!")
         return
     
     partner_id = user.current_chat_partner
     
-    # إنهاء المحادثة
-    update_user(user_id, {
-        "chat_status": "idle",
-        "current_chat_partner": None,
-        "chats_today": user.chats_today + 1
-    })
+    update_user(user_id, {"chat_status": "idle", "current_chat_partner": None, "chats_today": user.chats_today + 1})
+    update_user(partner_id, {"chat_status": "idle", "current_chat_partner": None})
     
-    partner = get_user(partner_id)
-    update_user(partner_id, {
-        "chat_status": "idle",
-        "current_chat_partner": None
-    })
-    
-    # إشعار الشريك
     try:
-        await context.bot.send_message(
-            partner_id,
-            "❌ انتهت المحادثة من قبل الطرف الآخر\n\n"
-            "💬 ابدأ محادثة جديدة: /chat"
-        )
+        await context.bot.send_message(partner_id, "❌ انتهت المحادثة")
     except:
         pass
     
-    await update.message.reply_text(
-        "✅ تم إنهاء المحادثة\n\n"
-        f"📊 المحادثات اليوم: {user.chats_today + 1}/{config.MAX_CHATS_PER_DAY}\n\n"
-        "💬 ابدأ محادثة جديدة: /chat",
-        reply_markup=main_menu_keyboard(user_id)
-    )
-
-async def next_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """الانتقال لشخص آخر"""
-    await stop_chat_command(update, context)
-    await random_chat_command(update, context)
-
-async def cancel_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إلغاء البحث"""
-    user_id = update.message.from_user.id
-    user = get_user(user_id)
-    
-    if user.chat_status != "waiting":
-        await update.message.reply_text(
-            "❌ لست في وضع الانتظار!",
-            reply_markup=main_menu_keyboard(user_id)
-        )
-        return
-    
-    remove_from_waiting(user_id)
-    update_user(user_id, {"chat_status": "idle"})
-    
-    await update.message.reply_text(
-        "❌ تم إلغاء البحث\n\n"
-        "💬 حاول مرة أخرى: /chat",
-        reply_markup=main_menu_keyboard(user_id)
-    )
-
-async def block_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """بلوك المستخدم الحالي"""
-    user_id = update.message.from_user.id
-    user = get_user(user_id)
-    
-    if user.chat_status != "chatting" or not user.current_chat_partner:
-        await update.message.reply_text(
-            "❌ لست في محادثة!",
-            reply_markup=main_menu_keyboard(user_id)
-        )
-        return
-    
-    partner_id = user.current_chat_partner
-    
-    # إنهاء المحادثة
-    update_user(user_id, {
-        "chat_status": "idle",
-        "current_chat_partner": None,
-        "chats_today": user.chats_today + 1
-    })
-    
-    partner = get_user(partner_id)
-    update_user(partner_id, {
-        "chat_status": "idle",
-        "current_chat_partner": None
-    })
-    
-    # إشعار الشريك
-    try:
-        await context.bot.send_message(
-            partner_id,
-            "🚫 تم حظرك من قبل المستخدم\n\n"
-            "💬 ابدأ محادثة جديدة: /chat"
-        )
-    except:
-        pass
-    
-    await update.message.reply_text(
-        "🚫 تم بلوك المستخدم\n\n"
-        "💬 ابدأ محادثة جديدة: /chat",
-        reply_markup=main_menu_keyboard(user_id)
-    )
+    await update.message.reply_text("✅ تم إنهاء المحادثة", reply_markup=main_menu_keyboard(user_id))
 
 # ==================== CALLBACK HANDLERS ====================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -834,140 +768,49 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await balance_command(update, context)
     elif data == "balance":
         await balance_command(update, context)
-    elif data == "points":
-        user = get_user(user_id)
-        level = UserLevel(user.level)
-        bonus = get_level_bonus(level)
-        
-        next_level = UserLevel(user.level + 1) if user.level < 6 else None
-        points_needed = 5000 * (2 ** user.level) if next_level else 0
-        
-        text = f"""⭐ نظام النقاط والمستويات
-━━━━━━━━━━━━━━━━━━━━
-💎 نقاطك الحالية: **{user.points}**
-
-🏆 مستواك الحالي: **{level.name}**
-🎁 bonus الإيداع: **{bonus*100}%**"""
-        
-        if next_level:
-            text += f"""
-
-📈 للمستوى التالي ({next_level.name}):
-• النقاط المطلوبة: {points_needed}
-• bonus الإيداع: {get_level_bonus(next_level)*100}%"""
-        
-        text += """
-
-💡 طرق كسب النقاط:
-• إيداع USDT: 100 نقطة/USDT
-• إحالة صديق: 20 نقطة
-• 10% من نقاط مُحالوك
-━━━━━━━━━━━━━━━━━━━━"""
-        
-        await query.edit_message_text(text, reply_markup=main_menu_keyboard(user_id))
     elif data == "deposit":
-        await deposit_command(update, context)
-    elif data.startswith("deposit_"):
-        amount = data.replace("deposit_", "")
-        if amount == "custom":
-            await query.edit_message_text("💵 أدخل المبلغ المراد إيداعه (ب USDT):")
-        else:
-            await process_deposit(query, context, int(amount))
+        await query.edit_message_text("🟢 الإيداع\n\nارسل المبلغ:")
     elif data == "withdraw":
-        await withdraw_command(update, context)
+        await query.edit_message_text("🔴 السحب\n\nارسل العنوان والمبلغ:")
     elif data == "transfer":
-        await transfer_command(update, context)
+        await query.edit_message_text("📤 التحويل\n\n`تحويل 10 REF-XXXXXX`")
     elif data == "referral":
-        await referral_command(update, context)
-    elif data == "transactions":
-        await transactions_command(update, context)
+        user = get_user(user_id)
+        await query.edit_message_text(f"🔗 الإحالة\n\nكودك: `{user.referral_code}`\n\nرابط: t.me/{context.bot.username}?start={user.referral_code}")
     elif data == "random_chat":
         await random_chat_command(update, context)
+    elif data == "private_messages":
+        await private_messages_command(update, context)
+    elif data == "gifts_menu":
+        await gifts_command(update, context)
+    elif data == "popular_models":
+        await popular_models_command(update, context)
     elif data == "settings":
         await settings_command(update, context)
-    elif data == "edit_profile":
-        await query.edit_message_text(
-            "👤 تعديل الملف الشخصي\n\n"
-            "أرسل معلوماتك بهذه الصيغة:\n"
-            "`عمر: 25`\n"
-            "`نبذة: أحب القراءة والسفر`",
-            reply_markup=back_keyboard()
-        )
+    elif data.startswith("gift_"):
+        gift_key = data.replace("gift_", "")
+        if gift_key in GIFTS:
+            gift = GIFTS[gift_key]
+            await query.edit_message_text(
+                f"🎁 {gift['emoji']} {gift['name']}\n"
+                f"السعر: {gift['price']} نقطة\n\n"
+                f"أرسل كود المستخدم المرسل إليه:",
+                reply_markup=back_keyboard()
+            )
     elif data.startswith("gender_"):
         gender = data.replace("gender_", "")
         if gender == "any":
             gender = ""
         update_user(user_id, {"gender": gender})
-        await query.edit_message_text(
-            f"✅ تم تحديد الجنس: {gender}\n\n"
-            "💬 ابدأ المحادثة: /chat",
-            reply_markup=main_menu_keyboard(user_id)
-        )
-    elif data == "setup_pin":
-        await query.edit_message_text("🔐 إعداد PIN\n\nأدخل رقم PIN مكون من 4 أرقام:", reply_markup=back_keyboard())
-    elif data == "verify":
-        await query.edit_message_text("✅ التحقق من الهوية\n\nللتحقق من هويتك، أرسل صورة واضحة لبطاقتك الشخصية.\n\n🔒 بياناتك مؤمنة ومشفرة.", reply_markup=back_keyboard())
-    elif data.startswith("confirm_"):
-        action = data.replace("confirm_", "")
-        await process_confirmation(query, context, action)
-    elif data == "cancel":
-        await query.edit_message_text("❌ تم إلغاء العملية", reply_markup=main_menu_keyboard(user_id))
+        await query.edit_message_text(f"✅ تم تحديد الجنس: {gender}", reply_markup=main_menu_keyboard(user_id))
     elif data == "chat_next":
-        await next_chat_command(update, context)
+        await stop_chat_command(update, context)
+        await random_chat_command(update, context)
     elif data == "chat_stop":
         await stop_chat_command(update, context)
     elif data == "chat_block":
-        await block_user_command(update, context)
-
-async def process_deposit(query, context, amount_usdt):
-    user_id = query.from_user.id
-    deposit_info = await binance.get_deposit_address()
-    txn = create_transaction(user_id, TransactionType.DEPOSIT, amount_usdt, description=f"إيداع {amount_usdt} USDT")
-    points = amount_usdt * config.POINTS_PER_USDT
-    
-    text = f"""🟢 طلب إيداع
-━━━━━━━━━━━━━━━━━━━━
-💵 المبلغ: {amount_usdt} USDT
-⭐ النقاط: +{points} نقطة
-
-📋 معرف المعاملة: `{txn.id}`
-
-💳 عنوان الإيداع (TRC20):
-`{deposit_info["address"]}`
-
-🌐 الشبكة: {deposit_info["network"]}
-
-⚠️ تحذيرات مهمة:
-• استخدم شبكة TRC20 فقط
-• لا ترسل عملات أخرى لهذا العنوان
-• بعد الإرسال، انتظر التأكيد (5-30 دقيقة)
-
-━━━━━━━━━━━━━━━━━━━━
-✅ بمجرد تأكيد الدفع، ستُضاف النقاط تلقائياً"""
-    await query.edit_message_text(text, reply_markup=confirm_keyboard(f"deposit_{txn.id}"))
-
-async def process_confirmation(query, context, action):
-    user_id = query.from_user.id
-    
-    if action.startswith("deposit_"):
-        txn_id = action.replace("deposit_", "")
-        user = get_user(user_id)
-        complete_transaction(txn_id)
-        
-        amount = 10.0
-        points = amount * config.POINTS_PER_USDT
-        
-        if user.referred_by:
-            referrer = get_user(user.referred_by)
-            referral_points = int(points * config.REFERRAL_COMMISSION)
-            update_user(user.referred_by, {"points": referrer.points + referral_points})
-        
-        new_points = user.points + points
-        new_level = get_user_level(new_points)
-        
-        update_user(user_id, {"balance": user.balance + amount, "points": new_points, "level": new_level.value, "total_deposited": user.total_deposited + amount})
-        
-        await query.edit_message_text(f"✅ تم تأكيد الإيداع!\n\n💵 المبلغ: {amount} USDT\n⭐ النقاط: +{points}\n🏆 المستوى: {new_level.name}", reply_markup=main_menu_keyboard(user_id))
+        await stop_chat_command(update, context)
+        await update.message.reply_text("🚫 تم بلوك المستخدم")
 
 # ==================== MESSAGE HANDLER ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -975,199 +818,199 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user = get_user(user_id)
     
-    # التحقق إذا كان في محادثة نشطة
+    # إذا كان في محادثة عشوائية
     if user.chat_status == "chatting" and user.current_chat_partner:
         partner_id = user.current_chat_partner
-        partner = get_user(partner_id)
-        
-        # إرسال الرسالة للشريك
         try:
-            gender_emoji = {"male": "👨", "female": "👩", "other": "🚻"}
-            sender_gender = gender_emoji.get(user.gender, "👤")
-            
-            await context.bot.send_message(
-                partner_id,
-                f"{sender_gender} غريب:\n\n{text}",
-                reply_markup=chat_keyboard()
-            )
+            await context.bot.send_message(partner_id, f"💬 {user.first_name}:\n{text}", reply_markup=chat_keyboard())
         except:
-            await update.message.reply_text("❌ تعذر إرسال الرسالة", reply_markup=main_menu_keyboard(user_id))
+            await update.message.reply_text("❌ تعذر إرسال الرسالة")
         return
     
-    # معالجة الأوامر العادية
-    if text.startswith("تحويل "):
-        await handle_transfer(update, context)
-    elif " " in text and len(text.split()) == 2:
-        parts = text.split()
-        if len(parts[0]) == 42 and parts[0].startswith("0x"):
-            await handle_withdraw(update, context)
-        else:
-            await update.message.reply_text("❌ أمر غير معروف!", reply_markup=main_menu_keyboard(user_id))
-    elif text.startswith("عمر:"):
+    # أوامر الإعدادات
+    if text.startswith("سعر "):
         try:
-            age = int(text.replace("عمر:", "").strip())
+            price = int(text.replace("سعر ", ""))
+            if 1 <= price <= 1000:
+                update_user(user_id, {"private_message_price": price})
+                await update.message.reply_text(f"✅ تم تحديد ثمن الرسالة: {price} نقطة")
+            else:
+                await update.message.reply_text("❌ السعر يجب أن يكون بين 1 و 1000")
+        except:
+            await update.message.reply_text("❌ صيغة خاطئة")
+        return
+    
+    if text == "فتح رسائل":
+        update_user(user_id, {"accept_private_messages": True})
+        await update.message.reply_text("✅ تم فتح الرسائل الخاصة")
+        return
+    
+    if text == "غلق رسائل":
+        update_user(user_id, {"accept_private_messages": False})
+        await update.message.reply_text("❌ تم غلق الرسائل الخاصة")
+        return
+    
+    if text == "فتح هدايا":
+        update_user(user_id, {"accept_gifts": True})
+        await update.message.reply_text("✅ تم فتح استقبال الهدايا")
+        return
+    
+    if text == "غلق هدايا":
+        update_user(user_id, {"accept_gifts": False})
+        await update.message.reply_text("❌ تم غلق استقبال الهدايا")
+        return
+    
+    if text.startswith("جنس "):
+        gender = text.replace("جنس ", "").strip()
+        if gender in ["رجل", "امرأة"]:
+            update_user(user_id, {"gender": gender})
+            await update.message.reply_text(f"✅ تم تحديد الجنس: {gender}")
+        else:
+            await update.message.reply_text("❌ اكتب: جنس رجل أو جنس امرأة")
+        return
+    
+    if text.startswith("عمر "):
+        try:
+            age = int(text.replace("عمر ", ""))
             if 13 <= age <= 99:
                 update_user(user_id, {"age": age})
-                await update.message.reply_text(f"✅ تم تحديد عمرك: {age} سنة", reply_markup=main_menu_keyboard(user_id))
+                await update.message.reply_text(f"✅ تم تحديد العمر: {age}")
             else:
-                await update.message.reply_text("❌ العمر يجب أن يكون بين 13 و 99", reply_markup=main_menu_keyboard(user_id))
+                await update.message.reply_text("❌ العمر يجب أن يكون بين 13 و 99")
         except:
-            await update.message.reply_text("❌ صيغة خاطئة", reply_markup=main_menu_keyboard(user_id))
-    elif text.startswith("نبذة:"):
-        bio = text.replace("نبذة:", "").strip()[:200]
-        update_user(user_id, {"bio": bio})
-        await update.message.reply_text("✅ تم تحديث النبذة", reply_markup=main_menu_keyboard(user_id))
-    else:
-        await update.message.reply_text("❌ أمر غير معروف!\n\nاستخدم /start للبدء", reply_markup=main_menu_keyboard(user_id))
-
-async def handle_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user = get_user(user_id)
-    
-    try:
-        parts = update.message.text.replace("تحويل ", "").split()
-        amount = float(parts[0])
-        recipient_code = parts[1]
-        
-        if amount > user.balance:
-            await update.message.reply_text("❌ رصيدك غير كافٍ!", reply_markup=main_menu_keyboard(user_id))
-            return
-        
-        users = db.load_users()
-        recipient_id = None
-        
-        for uid, udata in users.items():
-            if udata.get("referral_code") == recipient_code:
-                recipient_id = int(uid)
-                break
-        
-        if not recipient_id:
-            await update.message.reply_text("❌ المستخدم غير موجود!", reply_markup=main_menu_keyboard(user_id))
-            return
-        
-        if recipient_id == user_id:
-            await update.message.reply_text("❌ لا يمكنك التحويل لنفسك!", reply_markup=main_menu_keyboard(user_id))
-            return
-        
-        update_user(user_id, {"balance": user.balance - amount})
-        recipient = get_user(recipient_id)
-        update_user(recipient_id, {"balance": recipient.balance + amount})
-        
-        create_transaction(user_id, TransactionType.TRANSFER, amount, recipient_id=recipient_id, description=f"تحويل إلى {recipient_code}")
-        create_transaction(recipient_id, TransactionType.TRANSFER, amount, description=f"استلام من {user_id}")
-        
-        await update.message.reply_text(f"✅ تم التحويل بنجاح!\n\n📤 المُستلم: {recipient_code}\n💵 المبلغ: {amount} USDT\n💰 رصيدك المتبقي: {user.balance - amount} USDT", reply_markup=main_menu_keyboard(user_id))
-        
-    except:
-        await update.message.reply_text("❌ خطأ في الصيغة!\n\nالصيغة الصحيحة:\nتحويل 10 REF-XXXXXXXX", reply_markup=main_menu_keyboard(user_id))
-
-async def handle_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user = get_user(user_id)
-    
-    try:
-        parts = update.message.text.split()
-        address = parts[0]
-        amount = float(parts[1])
-        
-        fee = config.WITHDRAWAL_FEE
-        total = amount + fee
-        
-        if total > user.balance:
-            await update.message.reply_text(f"❌ رصيدك غير كافٍ!\nالمبلغ مع الرسوم: {total} USDT\nرصيدك: {user.balance} USDT", reply_markup=main_menu_keyboard(user_id))
-            return
-        
-        if amount < config.MIN_DEPOSIT:
-            await update.message.reply_text(f"❌ الحد الأدنى للسحب: {config.MIN_DEPOSIT} USDT", reply_markup=main_menu_keyboard(user_id))
-            return
-        
-        remaining_daily = config.MAX_WITHDRAWAL_DAILY - user.daily_withdrawal
-        if amount > remaining_daily:
-            await update.message.reply_text(f"❌ تجاوزت الحد اليومي!\nالمتاح للسحب: {remaining_daily} USDT", reply_markup=main_menu_keyboard(user_id))
-            return
-        
-        update_user(user_id, {"balance": user.balance - total, "daily_withdrawal": user.daily_withdrawal + amount, "total_spent": user.total_spent + amount})
-        
-        txn = create_transaction(user_id, TransactionType.WITHDRAWAL, amount, fee=fee, address=address, description=f"سحب إلى {address[:10]}...")
-        result = await binance.withdraw(address, amount)
-        
-        if result.get("success"):
-            complete_transaction(txn.id)
-            status = "✅ تم الإرسال"
-        else:
-            status = "⏳ قيد المعالجة"
-        
-        await update.message.reply_text(f"🔴 تم إنشاء طلب السحب\n\n📋 معرف المعاملة: {txn.id}\n💵 المبلغ: {amount} USDT\n💳 الرسوم: {fee} USDT\n📤 العنوان: {address[:10]}...\n\nالحالة: {status}", reply_markup=main_menu_keyboard(user_id))
-        
-    except:
-        await update.message.reply_text("❌ خطأ في الصيغة!\n\nالصيغة الصحيحة:\n0xABC...DEF 50", reply_markup=main_menu_keyboard(user_id))
-
-# ==================== ADMIN PANEL ====================
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user = get_user(user_id)
-    
-    if not user.is_admin:
-        await update.message.reply_text("❌ ليس لديك صلاحية!")
+            await update.message.reply_text("❌ صيغة خاطئة")
         return
     
-    users = db.load_users()
-    transactions = db.load_transactions()
-    waiting = db.load_waiting()
+    # إرسال رسالة خاصة
+    if text.startswith("msg ") or text.startswith("رسالة "):
+        try:
+            parts = text.replace("msg ", "").replace("رسالة ", "").split(" ", 1)
+            if len(parts) == 2:
+                recipient_code = parts[0]
+                message = parts[1]
+                
+                # البحث عن المستخدم
+                users = db.load_users()
+                receiver_id = None
+                for uid, udata in users.items():
+                    if udata.get("referral_code") == recipient_code:
+                        receiver_id = int(uid)
+                        break
+                
+                if not receiver_id:
+                    await update.message.reply_text("❌ المستخدم غير موجود!")
+                    return
+                
+                if receiver_id == user_id:
+                    await update.message.reply_text("❌ لا يمكنك إرسال رسالة لنفسك!")
+                    return
+                
+                success, msg = send_private_message(user_id, receiver_id, message)
+                await update.message.reply_text(msg)
+                
+                if success:
+                    receiver = get_user(receiver_id)
+                    try:
+                        await context.bot.send_message(
+                            receiver_id,
+                            f"💌 رسالة خاصة جديدة!\n\nمن: {user.first_name}\n\nالرسالة:\n{message}\n\n💰 ربحت: {int(receiver.private_message_price * 0.8)} نقطة"
+                        )
+                    except:
+                        pass
+            else:
+                await update.message.reply_text("❌ الصيغة: `msg REF-XXXXXX رسالة`")
+        except:
+            await update.message.reply_text("❌ خطأ! الصيغة: `msg REF-XXXXXX رسالة`")
+        return
     
-    total_balance = sum(u.get("balance", 0) for u in users.values())
-    total_points = sum(u.get("points", 0) for u in users.values())
-    total_deposits = sum(u.get("total_deposited", 0) for u in users.values())
+    # إرسال هدية
+    if text.startswith("gift ") or text.startswith("هدية "):
+        try:
+            parts = text.replace("gift ", "").replace("هدية ", "").split(" ", 1)
+            if len(parts) == 2:
+                recipient_code = parts[0]
+                gift_key = parts[1]
+                
+                users = db.load_users()
+                receiver_id = None
+                for uid, udata in users.items():
+                    if udata.get("referral_code") == recipient_code:
+                        receiver_id = int(uid)
+                        break
+                
+                if not receiver_id:
+                    await update.message.reply_text("❌ المستخدم غير موجود!")
+                    return
+                
+                success, msg = send_gift(user_id, receiver_id, gift_key)
+                await update.message.reply_text(msg)
+                
+                if success:
+                    receiver = get_user(receiver_id)
+                    gift_info = GIFTS.get(gift_key, {})
+                    try:
+                        await context.bot.send_message(
+                            receiver_id,
+                            f"🎁 تلقيت هدية! {gift_info.get('emoji', '🎁')}\n\nمن: {user.first_name}\n\n💰 ربحت: {int(gift_info.get('price', 0) * 0.8)} نقطة"
+                        )
+                    except:
+                        pass
+            else:
+                await update.message.reply_text("❌ الصيغة: `gift REF-XXXXXX sticker_rose`")
+        except:
+            await update.message.reply_text("❌ خطأ! الصيغة: `gift REF-XXXXXX sticker_rose`")
+        return
     
-    text = f"""👑 لوحة تحكم الأدمن
-━━━━━━━━━━━━━━━━━━━━
-📊 إحصائيات عامة:
-• 👥 المستخدمين: {len(users)}
-• 💰 الرصيد الإجمالي: {total_balance:.2f} USDT
-• 💎 إجمالي النقاط: {total_points}
-• 📥 إجمالي الإيداعات: {total_deposits} USDT
-• 📝 المعاملات: {len(transactions)}
-
-💬 إعدادات التواصل:
-• في الانتظار: {len(waiting)}
-• الحد اليومي: {config.MAX_CHATS_PER_DAY}
-━━━━━━━━━━━━━━━━━━━━"""
-    keyboard = [
-        [InlineKeyboardButton("📊 إحصائيات", callback_data="admin_stats")],
-        [InlineKeyboardButton("👥 المستخدمين", callback_data="admin_users")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
-    ]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    # تحويل نقاط
+    if text.startswith("تحويل "):
+        try:
+            parts = text.replace("تحويل ", "").split()
+            amount = float(parts[0])
+            recipient_code = parts[1]
+            
+            if user.points < amount:
+                await update.message.reply_text("❌ نقاطك غير كافية!")
+                return
+            
+            users = db.load_users()
+            receiver_id = None
+            for uid, udata in users.items():
+                if udata.get("referral_code") == recipient_code:
+                    receiver_id = int(uid)
+                    break
+            
+            if not receiver_id:
+                await update.message.reply_text("❌ المستخدم غير موجود!")
+                return
+            
+            update_user(user_id, {"points": user.points - amount})
+            receiver = get_user(receiver_id)
+            update_user(receiver_id, {"points": receiver.points + amount})
+            
+            await update.message.reply_text(f"✅ تم تحويل {amount} نقطة!")
+        except:
+            await update.message.reply_text("❌ خطأ! الصيغة: `تحويل 10 REF-XXXXXX`")
+        return
+    
+    await update.message.reply_text("❌ أمر غير معروف!\n\nاستخدم /start", reply_markup=main_menu_keyboard(user_id))
 
 # ==================== MAIN ====================
 def main():
     app = Application.builder().token(config.BOT_TOKEN).build()
     
-    # الأوامر
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("balance", balance_command))
-    app.add_handler(CommandHandler("deposit", deposit_command))
-    app.add_handler(CommandHandler("withdraw", withdraw_command))
-    app.add_handler(CommandHandler("transfer", transfer_command))
-    app.add_handler(CommandHandler("referral", referral_command))
-    app.add_handler(CommandHandler("transactions", transactions_command))
-    app.add_handler(CommandHandler("settings", settings_command))
-    app.add_handler(CommandHandler("admin", admin_command))
-    
-    # أوامر التواصل العشوائي
     app.add_handler(CommandHandler("chat", random_chat_command))
     app.add_handler(CommandHandler("stop", stop_chat_command))
-    app.add_handler(CommandHandler("next", next_chat_command))
-    app.add_handler(CommandHandler("cancel", cancel_chat_command))
-    app.add_handler(CommandHandler("block", block_user_command))
+    app.add_handler(CommandHandler("msg", lambda u, c: handle_message(u, c)))  # رسالة خاصة
+    app.add_handler(CommandHandler("gift", lambda u, c: handle_message(u, c)))  # هدية
+    app.add_handler(CommandHandler("settings", settings_command))
+    app.add_handler(CommandHandler("models", popular_models_command))
     
-    # Callbacks
     app.add_handler(CallbackQueryHandler(callback_handler))
-    
-    # الرسائل
     app.add_handler(MessageHandler(handle_message))
     
-    print("🤖 Crypto Wallet + Random Chat Bot is running...")
+    print("🤖 Crypto Wallet Bot is running...")
     app.run_polling(allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
