@@ -1,55 +1,78 @@
 """
-🤖 Smart Game Bot - نظام ألعاب ذكي
-اكسب نقاطاً باللعب - بدون قمار!
+💰 Smart Wallet Bot - محفظة ذكية مع نقاط ودفع
+Electronic Wallet + Points System + Payments
 """
 
 import os
 import json
+import hashlib
+import hmac
 import random
 import string
 import time
+import uuid
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field, asdict
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, PreCheckoutQueryHandler
 
 # ==================== CONFIG ====================
 @dataclass
 class Config:
     BOT_TOKEN: str = "8593254152:AAFm59iuO45KmWqnlxb0ufDPRN8kDH6mjGc"
-    # نظام النقاط
-    POINTS_PER_GAME: int = 10        # نقاط لكل لعبة تلعبها
-    WIN_BONUS: int = 20              # نقاط إضافية للفوز
-    STREAK_BONUS: int = 5            # نقاط لكل سلسلة انتصارات
-    DAILY_PLAY_BONUS: int = 50       # نقاط إضافية للعب اليومي
-    LEVEL_UP_BONUS: int = 100        # نقاط عند الصعود لمستوى
-    # حدود اللعب
-    FREE_GAMES_DAILY: int = 10       # ألعاب مجانية يومياً
-    MAX_LEVEL: int = 50
-    # AI
-    AI_ENABLED: bool = True
+    # المحفظة
+    MIN_DEPOSIT: float = 1.0
+    MIN_WITHDRAWAL: float = 5.0
+    MAX_WITHDRAWAL_DAILY: float = 1000.0
+    WITHDRAWAL_FEE: float = 1.0
+    TRANSFER_FEE: float = 0.5
+    # النقاط
+    POINTS_PER_USDT: float = 100.0
+    REFERRAL_BONUS: int = 50
+    REFERRAL_COMMISSION: float = 0.05
+    DAILY_BONUS: int = 10
+    # الدفع
+    PAYMENT_PROVIDER_TOKEN: str = ""  # Stripe أو غيره
+    SUBSCRIPTION_PRICE: int = 9.99  # دولار
+    # الأمان
+    VERIFICATION_REQUIRED: bool = True
+    KYC_ENABLED: bool = True
 
 config = Config()
 
 # ==================== ENUMS ====================
-class UserLevel(Enum):
-    NOVICE = 1        # مبتدئ
-    BEGINNER = 2      # مبتدئ
-    AMATEUR = 3       # هاوٍ
-    SKILLED = 4       # ماهر
-    EXPERT = 5        # خبير
-    MASTER = 6        # أستاذ
-    LEGEND = 7        # أسطورة
+class TransactionType(Enum):
+    DEPOSIT = "إيداع"
+    WITHDRAWAL = "سحب"
+    TRANSFER = "تحويل"
+    PAYMENT = "دفع"
+    PURCHASE = "شراء"
+    REFERRAL_BONUS = "مكافأة إحالة"
+    DAILY_BONUS = "مكافأة يومية"
+    GAME_REWARD = "مكافأة لعبة"
+    SUBSCRIPTION = "اشتراك"
+    REFUND = "استرداد"
 
-class GameCategory(Enum):
-    PUZZLE = "puzzle"        # ألغاز
-    MEMORY = "memory"        # ذاكرة
-    QUIZ = "quiz"            # أسئلة
-    REFLEX = "reflex"        # ردود فعل
-    STRATEGY = "strategy"    # استراتيجية
-    CREATIVE = "creative"    # إبداع
+class TransactionStatus(Enum):
+    PENDING = "معلق"
+    COMPLETED = "مكتمل"
+    FAILED = "فاشل"
+    CANCELLED = "ملغى"
+    VERIFYING = "قيد التحقق"
+
+class WalletStatus(Enum):
+    INACTIVE = "غير نشط"
+    ACTIVE = "نشط"
+    VERIFIED = "موثق"
+    FROZEN = "مجمّد"
+
+class SubscriptionTier(Enum):
+    FREE = "مجاني"
+    BASIC = "أساسي"
+    PREMIUM = "مميز"
+    VIP = "VIP"
 
 # ==================== DATA CLASSES ====================
 @dataclass
@@ -58,63 +81,103 @@ class User:
     username: str = ""
     first_name: str = ""
     last_name: str = ""
-    # النقاط والخبرة
+    # المحفظة
+    wallet_address: str = ""
+    balance: float = 0.0
+    wallet_status: str = "inactive"
+    # النقاط
     points: int = 0
-    experience: int = 0
+    points_lifetime: int = 0
+    # المستوى
     level: int = 1
+    experience: int = 0
+    # الإحالة
+    referral_code: str = ""
+    referred_by: int = None
+    referrals_count: int = 0
+    referral_earnings: float = 0.0
+    # الاشتراك
+    subscription_tier: str = "free"
+    subscription_expires: str = ""
+    # التحقق
+    is_verified: bool = False
+    kyc_status: str = "none"  # none, pending, approved, rejected
+    # الأمان
+    pin_code: str = ""
+    two_factor_secret: str = ""
+    failed_attempts: int = 0
+    lock_until: str = ""
     # الإحصائيات
-    games_played: int = 0
-    games_won: int = 0
-    games_lost: int = 0
-    current_streak: int = 0
-    best_streak: int = 0
-    # المكافآت
-    daily_bonus_claimed: bool = False
-    last_claim_date: str = ""
-    total_earnings: int = 0
-    # التحديات
-    challenges_completed: int = 0
-    puzzles_solved: int = 0
-    quizzes_answered: int = 0
+    total_deposited: float = 0.0
+    total_withdrawn: float = 0.0
+    total_transferred: float = 0.0
+    total_spent: float = 0.0
     # الوقت
     join_date: str = field(default_factory=lambda: datetime.now().isoformat())
-    last_play: str = ""
-    # الأمان
-    is_banned: bool = False
+    last_active: str = field(default_factory=lambda: datetime.now().isoformat())
+    # الأ：admin
     is_admin: bool = False
+    is_banned: bool = False
 
 @dataclass
-class GameSession:
+class Transaction:
     id: str
     user_id: int
-    game_type: str
-    category: str
-    difficulty: str
-    score: int = 0
-    time_taken: int = 0
-    won: bool = False
-    points_earned: int = 0
-    bonus_points: int = 0
+    type: str
+    amount: float
+    fee: float
+    status: str
+    wallet_address: str = ""
+    tx_hash: str = ""
+    recipient_id: int = None
+    description: str = ""
+    payment_method: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    completed_at: str = ""
+
+@dataclass
+class PaymentMethod:
+    id: str
+    user_id: int
+    type: str  # card, wallet, crypto
+    provider: str
+    last_four: str = ""
+    is_default: bool = False
+    is_verified: bool = False
+    expiry_date: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
 @dataclass
-class DailyChallenge:
+class Invoice:
     id: str
     user_id: int
-    game_type: str
-    target: int
-    progress: int = 0
-    completed: bool = False
-    reward: int = 0
+    amount: float
+    currency: str
+    description: str
+    status: str
+    payment_url: str = ""
     expires_at: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+@dataclass
+class Subscription:
+    id: str
+    user_id: int
+    tier: str
+    price: float
+    start_date: str
+    end_date: str
+    auto_renew: bool = False
+    status: str = "active"
 
 # ==================== DATABASE ====================
 class Database:
     def __init__(self):
         self.users_file = "users.json"
-        self.sessions_file = "game_sessions.json"
-        self.challenges_file = "daily_challenges.json"
-        self.puzzles_file = "puzzles.json"
+        self.transactions_file = "transactions.json"
+        self.payment_methods_file = "payment_methods.json"
+        self.invoices_file = "invoices.json"
+        self.subscriptions_file = "subscriptions.json"
     
     def load_users(self) -> Dict:
         try:
@@ -127,74 +190,70 @@ class Database:
         with open(self.users_file, "w") as f:
             json.dump(users, f, ensure_ascii=False, indent=2)
     
-    def load_sessions(self) -> List:
+    def load_transactions(self) -> List:
         try:
-            with open(self.sessions_file, "r") as f:
+            with open(self.transactions_file, "r") as f:
                 return json.load(f)
         except:
             return []
     
-    def save_sessions(self, sessions: List):
-        with open(self.sessions_file, "w") as f:
-            json.dump(sessions, f, ensure_ascii=False, indent=2)
+    def save_transactions(self, transactions: List):
+        with open(self.transactions_file, "w") as f:
+            json.dump(transactions, f, ensure_ascii=False, indent=2)
     
-    def load_challenges(self) -> List:
+    def load_payment_methods(self) -> List:
         try:
-            with open(self.challenges_file, "r") as f:
+            with open(self.payment_methods_file, "r") as f:
                 return json.load(f)
         except:
             return []
     
-    def save_challenges(self, challenges: List):
-        with open(self.challenges_file, "w") as f:
-            json.dump(challenges, f, ensure_ascii=False, indent=2)
+    def save_payment_methods(self, methods: List):
+        with open(self.payment_methods_file, "w") as f:
+            json.dump(methods, f, ensure_ascii=False, indent=2)
     
-    def load_puzzles(self) -> List:
+    def load_invoices(self) -> List:
         try:
-            with open(self.puzzles_file, "r") as f:
+            with open(self.invoices_file, "r") as f:
                 return json.load(f)
         except:
-            return self.get_default_puzzles()
+            return []
     
-    def save_puzzles(self, puzzles: List):
-        with open(self.puzzles_file, "w") as f:
-            json.dump(puzzles, f, ensure_ascii=False, indent=2)
+    def save_invoices(self, invoices: List):
+        with open(self.invoices_file, "w") as f:
+            json.dump(invoices, f, ensure_ascii=False, indent=2)
     
-    def get_default_puzzles(self) -> List:
-        return [
-            # ألغاز منطقية
-            {"type": "logic", "question": "ما هو الرقم التالي: 2، 6، 12، 20، 30، ...", "answer": "42", "hint": "الفروق: 4، 6، 8، 10، 12"},
-            {"type": "logic", "question": "ما هو الرقم الخطأ: 2، 3، 5، 8، 12، 17", "answer": "12", "hint": "كل رقم هو مجموع السابقتين + 1"},
-            {"type": "logic", "question": "أكمل السلسلة: أ، ج، هـ، ...", "answer": "و", "hint": "الحروف المتحركة"},
-            {"type": "logic", "question": "إذا كان A=1، B=2، ما هو CAB؟", "answer": "312", "hint": "C=3, A=1, B=2"},
-            {"type": "logic", "question": "ما هو اليوم بعد tomorrow yesterday؟", "answer": "اليوم", "hint": "فكر في المعنى"},
-            # ألغاز رياضية
-            {"type": "math", "question": "ما هو 7 × 8 - 4؟", "answer": "52", "hint": "الضرب أولاً"},
-            {"type": "math", "question": "ما هو 100 ÷ 4 + 3 × 5؟", "answer": "40", "hint": "العمليات بالترتيب"},
-            {"type": "math", "question": "ما هو مربع 12؟", "answer": "144", "hint": "12 × 12"},
-            {"type": "math", "question": "ما هو 15% من 200؟", "answer": "30", "hint": "15 ÷ 100 × 200"},
-            # ألغاز كلمات
-            {"type": "word", "question": "ما هو عكس 'ساخن'؟", "answer": "بارد", "hint": "برد"},
-            {"type": "word", "question": "ما هو جمع 'كتاب'؟", "answer": "كتب", "hint": "ك ت ب"},
-            {"type": "word", "question": "ما هو اسم الفاعل من 'كتب'؟", "answer": "كاتب", "hint": "يكتب"},
-            # ألغاز عامة
-            {"type": "general", "question": "ما هو أكبر كوكب في النظام الشمسي؟", "answer": "المشتري", "hint": "كبير"},
-            {"type": "general", "question": "ما عاصمة فرنسا؟", "answer": "باريس", "hint": "برج"},
-            {"type": "general", "question": "من مكتشف أمريكا؟", "answer": "كولومبوس", "hint": "كريستوفر"},
-            {"type": "general", "question": "كم قارة في العالم؟", "answer": "7", "hint": "سبع"},
-            {"type": "general", "question": "ما أطول نهر في العالم؟", "answer": "النيل", "hint": "في أفريقيا"},
-        ]
+    def load_subscriptions(self) -> List:
+        try:
+            with open(self.subscriptions_file, "r") as f:
+                return json.load(f)
+        except:
+            return []
+    
+    def save_subscriptions(self, subs: List):
+        with open(self.subscriptions_file, "w") as f:
+            json.dump(subs, f, ensure_ascii=False, indent=2)
 
 db = Database()
 
 # ==================== HELPERS ====================
-def generate_id(prefix: str = "ID", length: int = 8) -> str:
+def generate_id(prefix: str = "ID", length: int = 12) -> str:
     return prefix + "-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
+
+def generate_wallet_address() -> str:
+    return "0x" + "".join(random.choices("0123456789abcdef", k=40))
+
+def generate_referral_code() -> str:
+    return "REF" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
 def get_user(user_id: int) -> User:
     users = db.load_users()
     if str(user_id) not in users:
-        user = User(user_id=user_id)
+        user = User(
+            user_id=user_id,
+            wallet_address=generate_wallet_address(),
+            referral_code=generate_referral_code()
+        )
         users[str(user_id)] = asdict(user)
         db.save_users(users)
         return user
@@ -210,341 +269,296 @@ def get_level_info(level: int) -> Tuple[str, int]:
     """معلومات المستوى"""
     levels = {
         1: ("مبتدئ", 0),
-        2: ("هاوٍ", 100),
-        3: ("ماهر", 300),
-        4: ("خبير", 600),
-        5: ("أستاذ", 1000),
-        6: ("محترف", 1500),
-        7: ("أسطورة", 2500),
-        8: ("موهوب", 4000),
-        9: ("عبقري", 6000),
-        10: ("خرافي", 10000),
+        2: ("برونزي", 500),
+        3: ("فضي", 1500),
+        4: ("ذهبي", 3500),
+        5: ("بلاتيني", 7000),
+        6: ("ماسي", 15000),
+        7: ("VIP", 30000),
     }
-    
-    for lvl in range(10, 0, -1):
-        if level >= lvl:
-            return levels.get(lvl, ("غير معروف", 0))
-    return ("مبتدئ", 0)
+    return levels.get(level, ("غير معروف", 0))
 
 def calculate_level(experience: int) -> int:
-    """حساب المستوى من الخبرة"""
-    thresholds = [0, 100, 300, 600, 1000, 1500, 2500, 4000, 6000, 10000, 15000, 20000]
+    thresholds = [0, 500, 1500, 3500, 7000, 15000, 30000, 50000]
     for i, threshold in enumerate(thresholds):
         if experience < threshold:
             return i + 1
-    return len(thresholds)
+    return len(thresholds) + 1
 
-def get_xp_for_next_level(current_level: int) -> int:
-    """الخبرة المطلوبة للمستوى التالي"""
-    thresholds = [0, 100, 300, 600, 1000, 1500, 2500, 4000, 6000, 10000, 15000, 20000]
-    if current_level < len(thresholds):
-        return thresholds[current_level]
-    return thresholds[-1]
+# ==================== WALLET OPERATIONS ====================
+def create_transaction(user_id: int, txn_type: TransactionType, amount: float, description: str = "", recipient_id: int = None, fee: float = 0.0) -> Transaction:
+    txn = Transaction(
+        id=generate_id("TXN"),
+        user_id=user_id,
+        type=txn_type.value,
+        amount=amount,
+        fee=fee,
+        status=TransactionStatus.PENDING.value,
+        description=description,
+        recipient_id=recipient_id
+    )
+    transactions = db.load_transactions()
+    transactions.append(asdict(txn))
+    db.save_transactions(transactions)
+    return txn
 
-# ==================== GAMES ====================
-GAMES = {
-    # ألغاز
-    "puzzle": {
-        "name": "🧩 لغز",
-        "category": "puzzle",
-        "description": "حل الألغاز المنطقية",
-        "base_points": 15,
-        "win_bonus": 10,
-        "difficulty_levels": ["easy", "medium", "hard"]
-    },
-    "math_puzzle": {
-        "name": "🔢 لغز رياضي",
-        "category": "puzzle",
-        "description": "حل المسائل الرياضية",
-        "base_points": 12,
-        "win_bonus": 8,
-        "difficulty_levels": ["easy", "medium", "hard"]
-    },
-    # ذاكرة
-    "memory": {
-        "name": "🧠 ذاكرة",
-        "category": "memory",
-        "description": "تذكر تسلسل الأرقام",
-        "base_points": 10,
-        "win_bonus": 5,
-        "difficulty_levels": ["easy", "medium", "hard"]
-    },
-    # أسئلة
-    "quiz": {
-        "name": "❓ سؤال",
-        "category": "quiz",
-        "description": "أجب على الأسئلة العامة",
-        "base_points": 8,
-        "win_bonus": 5,
-        "difficulty_levels": ["easy", "medium", "hard"]
-    },
-    # ردود فعل
-    "reflex": {
-        "name": "⚡ ردود فعل",
-        "category": "reflex",
-        "description": "اضغط في الوقت المناسب",
-        "base_points": 10,
-        "win_bonus": 7,
-        "difficulty_levels": ["easy", "medium", "hard"]
-    },
-    # سرعة
-    "speed": {
-        "name": "🚀 سرعة",
-        "category": "reflex",
-        "description": "أجب بسرعة",
-        "base_points": 12,
-        "win_bonus": 8,
-        "difficulty_levels": ["easy", "medium", "hard"]
-    },
-}
+def complete_transaction(txn_id: str):
+    transactions = db.load_transactions()
+    for txn in transactions:
+        if txn["id"] == txn_id:
+            txn["status"] = TransactionStatus.COMPLETED.value
+            txn["completed_at"] = datetime.now().isoformat()
+            break
+    db.save_transactions(transactions)
 
-def get_puzzle(difficulty: str = "medium") -> Dict:
-    """الحصول على لغز عشوائي"""
-    puzzles = db.load_puzzles()
+def deposit(user_id: int, amount: float, payment_method: str = "card") -> Tuple[bool, str]:
+    """إيداع"""
+    if amount < config.MIN_DEPOSIT:
+        return False, f"الحد الأدنى للإيداع: {config.MIN_DEPOSIT} USDT"
     
-    if difficulty == "easy":
-        filtered = [p for p in puzzles if p.get("type") in ["word", "general"]]
-    elif difficulty == "hard":
-        filtered = [p for p in puzzles if p.get("type") == "logic"]
-    else:
-        filtered = puzzles
-    
-    return random.choice(filtered) if filtered else puzzles[0]
-
-def get_quiz_question(difficulty: str = "medium") -> Dict:
-    """الحصول على سؤال"""
-    quizzes = [
-        {"q": "ما عاصمة اليابان؟", "a": "طوكيو", "options": ["طوكيو", "كيوتو", "أوساكا", "يوكوهاما"]},
-        {"q": "من написа 'Romeo and Juliet'؟", "a": "شكسبير", "options": ["شكسبير", "ديكنز", "هاملت", "برنارد شو"]},
-        {"q": "ما هو العنصر الرمز 'O'؟", "a": "الأكسجين", "options": ["الأكسجين", "الذهب", "الفضة", "الحديد"]},
-        {"q": "كم عدد ألوان قوس قزح؟", "a": "7", "options": ["7", "6", "8", "5"]},
-        {"q": "ما هو أكبر محيط؟", "a": "الهادئ", "options": ["الهادئ", "الأطلسي", "الهندي", "القطبي"]},
-        {"q": "من هو مؤسس فيسبوك؟", "a": "مارك", "options": ["مارك", "إيلون", "جيف", "بيل"]},
-        {"q": "ما هو أقرب كوكب للشمس؟", "a": "عطارد", "options": ["عطارد", "الزهرة", "المريخ", "الأرض"]},
-        {"q": "كم عدد أسنان الإنسان البالغ؟", "a": "32", "options": ["32", "28", "30", "34"]},
-    ]
-    return random.choice(quizzes)
-
-def play_game(user_id: int, game_type: str, user_answer: str, difficulty: str = "medium") -> Tuple[bool, str, int]:
-    """اللعب - كلعبة تكسب نقاط بغض النظر عن النتيجة!"""
     user = get_user(user_id)
     
-    if game_type not in GAMES:
-        return False, "اللعبة غير موجودة", 0
+    # إنشاء معاملة
+    txn = create_transaction(user_id, TransactionType.DEPOSIT, amount, f"إيداع عبر {payment_method}")
     
-    game = GAMES[game_type]
-    won = False
-    points_earned = game["base_points"]
-    bonus_points = 0
-    
-    # التحقق من الإجابة
-    if game_type in ["puzzle", "math_puzzle"]:
-        puzzle = get_puzzle(difficulty)
-        correct_answer = puzzle.get("answer", "").strip().lower()
-        user_answer = user_answer.strip().lower()
-        
-        if correct_answer == user_answer:
-            won = True
-            bonus_points = game["win_bonus"]
-            points_earned += bonus_points
-            feedback = f"✅ إجابة صحيحة! +{points_earned} نقطة"
-        else:
-            feedback = f"❌ إجابة خاطئة. الإجابة: {puzzle['answer']}\n💡 تلميح: {puzzle.get('hint', '')}\n+{points_earned} نقطة للمحاولة!"
-    
-    elif game_type == "quiz":
-        quiz = get_quiz_question(difficulty)
-        correct_answer = quiz.get("a", "").strip()
-        
-        if user_answer.strip() == correct_answer:
-            won = True
-            bonus_points = game["win_bonus"]
-            points_earned += bonus_points
-            feedback = f"✅ إجابة صحيحة! +{points_earned} نقطة"
-        else:
-            feedback = f"❌ الإجابة الصحيحة: {correct_answer}\n+{points_earned} نقطة للمحاولة!"
-    
-    elif game_type == "memory":
-        # لعبة الذاكرة - محاكاة
-        try:
-            user_num = int(user_answer)
-            target = random.randint(1, 9)
-            if user_num == target:
-                won = True
-                bonus_points = game["win_bonus"]
-                points_earned += bonus_points
-                feedback = f"✅ تذكرت الرقم {target}! +{points_earned} نقطة"
-            else:
-                feedback = f"الرقم كان {target}. +{points_earned} نقطة!",
-        except:
-            feedback = "أدخل رقماً من 1-9"
-            points_earned = 0
-    
-    else:
-        # ألعاب أخرى
-        won = random.random() > 0.5
-        if won:
-            bonus_points = game["win_bonus"]
-            points_earned += bonus_points
-            feedback = f"✅ فزت! +{points_earned} نقطة"
-        else:
-            feedback = f"حاول مرة أخرى! +{points_earned} نقطة"
-    
-    # تحديث المستخدم
-    new_streak = user.current_streak + 1 if won else 0
-    streak_bonus = new_streak * config.STREAK_BONUS if won else 0
-    
-    total_points = points_earned + streak_bonus
-    new_experience = user.experience + total_points
-    new_level = calculate_level(new_experience)
-    
-    level_up = new_level > user.level
-    if level_up:
-        total_points += config.LEVEL_UP_BONUS
-        new_experience += config.LEVEL_UP_BONUS
-    
+    # تحديث الرصيد
     update_user(user_id, {
-        "points": user.points + total_points,
-        "experience": new_experience,
-        "level": new_level,
-        "games_played": user.games_played + 1,
-        "games_won": user.games_won + 1 if won else user.games_won,
-        "games_lost": user.games_lost + 1 if not won else user.games_lost,
-        "current_streak": new_streak,
-        "best_streak": max(user.best_streak, new_streak),
-        "total_earnings": user.total_earnings + total_points,
-        "puzzles_solved": user.puzzles_solved + 1 if game_type == "puzzle" else user.puzzles_solved,
-        "quizzes_answered": user.quizzes_answered + 1 if game_type == "quiz" else user.quizzes_answered,
-        "last_play": datetime.now().isoformat()
+        "balance": user.balance + amount,
+        "total_deposited": user.total_deposited + amount,
+        "wallet_status": "active"
     })
     
-    # حفظ الجلسة
-    session = GameSession(
-        id=generate_id("SESSION"),
-        user_id=user_id,
-        game_type=game_type,
-        category=game["category"],
-        difficulty=difficulty,
-        score=points_earned,
-        won=won,
-        points_earned=total_points,
-        bonus_points=bonus_points + streak_bonus
-    )
-    sessions = db.load_sessions()
-    sessions.append(asdict(session))
-    db.save_sessions(sessions)
+    complete_transaction(txn.id)
     
-    result_msg = feedback
-    if level_up:
-        level_name, _ = get_level_info(new_level)
-        result_msg += f"\n🎉 تهانينا! صعدت للمستوى {new_level} ({level_name})! +{config.LEVEL_UP_BONUS} نقطة"
+    # منح نقاط
+    points_earned = int(amount * config.POINTS_PER_USDT)
+    update_user(user_id, {"points": user.points + points_earned, "points_lifetime": user.points_lifetime + points_earned})
     
-    if won and new_streak >= 3:
-        result_msg += f"\n🔥 سلسلة انتصارات: {new_streak}! +{streak_bonus} نقطة"
-    
-    return won, result_msg, total_points
+    return True, f"✅ تم الإيداع!
 
-def get_daily_bonus(user_id: int) -> Tuple[bool, str]:
+💰 المبلغ: {amount} USDT
+⭐ النقاط المكتسبة: {points_earned}
+💳 الرصيد الجديد: {user.balance + amount} USDT"
+
+def withdraw(user_id: int, amount: float, address: str) -> Tuple[bool, str]:
+    """سحب"""
+    user = get_user(user_id)
+    
+    if amount < config.MIN_WITHDRAWAL:
+        return False, f"الحد الأدنى للسحب: {config.MIN_WITHDRAWAL} USDT"
+    
+    if user.balance < amount:
+        return False, "رصيدك غير كافٍ!"
+    
+    fee = config.WITHDRAWAL_FEE
+    total = amount + fee
+    
+    if user.balance < total:
+        return False, f"تحتاج {total} USDT (شامل الرسوم)"
+    
+    # التحقق من الحد اليومي
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_withdrawn = get_today_withdrawals(user_id)
+    
+    if today_withdrawn + amount > config.MAX_WITHDRAWAL_DAILY:
+        return False, f"الحد اليومي: {config.MAX_WITHDRAWAL_DAILY} USDT"
+    
+    # إنشاء معاملة
+    txn = create_transaction(user_id, TransactionType.WITHDRAWAL, amount, f"سحب إلى {address}", fee=fee)
+    
+    # تحديث الرصيد
+    update_user(user_id, {
+        "balance": user.balance - total,
+        "total_withdrawn": user.total_withdrawn + amount
+    })
+    
+    complete_transaction(txn.id)
+    
+    return True, f"✅ تم إنشاء طلب السحب!
+
+💰 المبلغ: {amount} USDT
+📝 الرسوم: {fee} USDT
+💳 الرصيد الجديد: {user.balance - total} USDT
+⏳ awaiting التحويل خلال 24 ساعة"
+
+def transfer(sender_id: int, recipient_code: str, amount: float) -> Tuple[bool, str]:
+    """تحويل"""
+    sender = get_user(sender_id)
+    
+    if amount <= 0:
+        return False, "المبلغ يجب أن يكون موجباً"
+    
+    if sender.balance < amount:
+        return False, "رصيدك غير كافٍ!"
+    
+    # البحث عن المستلم
+    users = db.load_users()
+    recipient_id = None
+    for uid, udata in users.items():
+        if udata.get("referral_code") == recipient_code:
+            recipient_id = int(uid)
+            break
+    
+    if not recipient_id:
+        return False, "المستخدم غير موجود!"
+    
+    if recipient_id == sender_id:
+        return False, "لا يمكنك تحويل لنفسك!"
+    
+    fee = amount * config.TRANSFER_FEE / 100
+    total = amount + fee
+    
+    if sender.balance < total:
+        return False, f"تحتاج {total} USDT (شامل الرسوم {fee:.2f} USDT)"
+    
+    recipient = get_user(recipient_id)
+    
+    # إنشاء معاملة
+    txn = create_transaction(sender_id, TransactionType.TRANSFER, amount, f"تحويل لـ {recipient.first_name}", recipient_id=recipient_id, fee=fee)
+    
+    # التحويل
+    update_user(sender_id, {
+        "balance": sender.balance - total,
+        "total_transferred": sender.total_transferred + amount
+    })
+    
+    update_user(recipient_id, {
+        "balance": recipient.balance + amount
+    })
+    
+    complete_transaction(txn.id)
+    
+    return True, f"✅ تم التحويل!
+
+💰 المبلغ: {amount} USDT
+📝 الرسوم: {fee:.2f} USDT
+👤 المستلم: {recipient.first_name}
+💳 رصيدك الجديد: {sender.balance - total} USDT"
+
+def get_today_withdrawals(user_id: int) -> float:
+    today = datetime.now().strftime("%Y-%m-%d")
+    transactions = db.load_transactions()
+    total = 0
+    for t in transactions:
+        if t["user_id"] == user_id and t["type"] == TransactionType.WITHDRAWAL.value:
+            if t["created_at"].startswith(today):
+                total += t["amount"]
+    return total
+
+def get_user_transactions(user_id: int, limit: int = 10) -> List[Transaction]:
+    transactions = db.load_transactions()
+    user_txns = [Transaction(**t) for t in transactions if t["user_id"] == user_id]
+    return sorted(user_txns, key=lambda x: x.created_at, reverse=True)[:limit]
+
+# ==================== PAYMENT SYSTEM ====================
+def create_invoice(user_id: int, amount: float, description: str, currency: str = "USD") -> Invoice:
+    """إنشاء فاتورة"""
+    invoice = Invoice(
+        id=generate_id("INV"),
+        user_id=user_id,
+        amount=amount,
+        currency=currency,
+        description=description,
+        status="pending",
+        expires_at=(datetime.now() + timedelta(days=3)).isoformat()
+    )
+    
+    invoices = db.load_invoices()
+    invoices.append(asdict(invoice))
+    db.save_invoices(invoices)
+    
+    return invoice
+
+def create_subscription(user_id: int, tier: str, duration_days: int = 30) -> Subscription:
+    """إنشاء اشتراك"""
+    prices = {
+        "basic": 4.99,
+        "premium": 9.99,
+        "vip": 19.99
+    }
+    
+    price = prices.get(tier, 0)
+    now = datetime.now()
+    end_date = now + timedelta(days=duration_days)
+    
+    subscription = Subscription(
+        id=generate_id("SUB"),
+        user_id=user_id,
+        tier=tier,
+        price=price,
+        start_date=now.isoformat(),
+        end_date=end_date.isoformat()
+    )
+    
+    subs = db.load_subscriptions()
+    subs.append(asdict(subscription))
+    db.save_subscriptions(subs)
+    
+    # تحديث المستخدم
+    user = get_user(user_id)
+    update_user(user_id, {
+        "subscription_tier": tier,
+        "subscription_expires": end_date.isoformat()
+    })
+    
+    return subscription
+
+def add_payment_method(user_id: int, method_type: str, provider: str, last_four: str = "") -> PaymentMethod:
+    """إضافة طريقة دفع"""
+    method = PaymentMethod(
+        id=generate_id("PM"),
+        user_id=user_id,
+        type=method_type,
+        provider=provider,
+        last_four=last_four
+    )
+    
+    methods = db.load_payment_methods()
+    methods.append(asdict(method))
+    db.save_payment_methods(methods)
+    
+    return method
+
+# ==================== REFERRAL SYSTEM ====================
+def process_referral(referrer_id: int, new_user_id: int):
+    """معالجة الإحالة"""
+    referrer = get_user(referrer_id)
+    new_user = get_user(new_user_id)
+    
+    if referrer.referred_by == new_user_id:
+        return  # لا إحالة متداخلة
+    
+    # منح المكافأة
+    bonus = config.REFERRAL_BONUS
+    update_user(referrer_id, {
+        "points": referrer.points + bonus,
+        "referrals_count": referrer.referrals_count + 1,
+        "referral_earnings": referrer.referral_earnings + bonus
+    })
+    
+    # منح نقاط للمُحال
+    update_user(new_user_id, {"points": new_user.points + bonus // 2})
+    
+    create_transaction(referrer_id, TransactionType.REFERRAL_BONUS, bonus, f"إحالة من المستخدم {new_user_id}")
+
+# ==================== DAILY BONUS ====================
+def claim_daily_bonus(user_id: int) -> Tuple[bool, str]:
     """المكافأة اليومية"""
     user = get_user(user_id)
     today = datetime.now().strftime("%Y-%m-%d")
     
-    if user.last_claim_date == today and user.daily_bonus_claimed:
+    if hasattr(user, 'last_bonus_date') and user.last_bonus_date == today:
         return False, "المكافأة اليومية مُطالَبة بالفعل!"
     
+    bonus = config.DAILY_BONUS
     update_user(user_id, {
-        "points": user.points + config.DAILY_PLAY_BONUS,
-        "daily_bonus_claimed": True,
-        "last_claim_date": today
+        "points": user.points + bonus,
+        "last_bonus_date": today
     })
     
-    return True, f"✅ مكافأة يومية: +{config.DAILY_PLAY_BONUS} نقطة!"
-
-def get_user_stats(user_id: int) -> str:
-    """إحصائيات المستخدم"""
-    user = get_user(user_id)
-    level_name, _ = get_level_info(user.level)
+    create_transaction(user_id, TransactionType.DAILY_BONUS, bonus, "مكافأة يومية")
     
-    win_rate = (user.games_won / user.games_played * 100) if user.games_played > 0 else 0
-    
-    next_level_xp = get_xp_for_next_level(user.level)
-    progress = (user.experience / next_level_xp * 100) if next_level_xp > 0 else 100
-    
-    stats = f"""📊 إحصائياتك
-━━━━━━━━━━━━━━━━
-🎮 المستوى: {user.level} ({level_name})
-⭐ النقاط: {user.points}
-📈 الخبرة: {user.experience}/{next_level_xp}
-
-📊 الألعاب:
-• لعبت: {user.games_played}
-• فزت: {user.games_won}
-• خسرت: {user.games_lost}
-• نسبة الفوز: {win_rate:.1f}%
-
-🔥 السلسلة:
-• الحالية: {user.current_streak}
-• الأفضل: {user.best_streak}
-
-🏆 الإنجازات:
-• الألغاز: {user.puzzles_solved}
-• الأسئلة: {user.quizzes_answered}
-• المكاسب: {user.total_earnings}
-
-📏 التقدم للمستوى التالي:
-[{('█' * int(progress/10)) + ('░' * (10-int(progress/10)))}] {progress:.1f}%
-━━━━━━━━━━━━━━━━"""
-    return stats
-
-# ==================== AI ASSISTANT ====================
-class AIAssistant:
-    """مساعد ذكي"""
-    
-    def __init__(self):
-        self.tips = {
-            "puzzle": [
-                "💡 نصيحة: فكر في الأنماط!",
-                "💡 حلل السؤال بعناية",
-                "💡 جرب كل الاحتمالات",
-            ],
-            "quiz": [
-                "💡 اقرأ السؤال بتمعن",
-                "💡 استبعد الإجابات الخاطئة",
-                "💡 ثق بحدسك",
-            ],
-            "memory": [
-                "💡 ركز على التسلسل",
-                "💡 كرر بصوت عالٍ",
-                "💡 تخيل الأرقام",
-            ]
-        }
-    
-    def get_tip(self, game_type: str) -> str:
-        return random.choice(self.tips.get(game_type, ["💡 حاول مرة أخرى!"]))
-    
-    def analyze_performance(self, user: User) -> str:
-        if user.games_played == 0:
-            return "🌟 مبتدئ جديد! ابدأ اللعب لكسب النقاط!"
-        
-        win_rate = user.games_won / user.games_played
-        
-        if win_rate >= 0.8:
-            return f"🔥 أداء رائع! {user.games_won} فوز من {user.games_played}!",
-        elif win_rate >= 0.6:
-            return f"⭐ أداء جيد! استمر في التقدم!",
-        elif win_rate >= 0.4:
-            return f"💪 جيد!Practice makes perfect!",
-        else:
-            return f"🎯 كل محاولة تقربك من النجاح!"
-    
-    def suggest_game(self, user: User) -> str:
-        if user.puzzles_solved < 5:
-            return "🎯 جرب ألغاز بسيطة!",
-        elif user.quizzes_answered < 10:
-            return "❓ جرب أسئلة متنوعة!",
-        else:
-            return "🚀 جرب جميع الألعاب!",
-
-ai = AIAssistant()
+    return True, f"✅ مكافأة يومية: +{bonus} نقطة!"
 
 # ==================== KEYBOARDS ====================
 def main_menu_keyboard(user_id: int):
@@ -552,26 +566,41 @@ def main_menu_keyboard(user_id: int):
     level_name, _ = get_level_info(user.level)
     
     keyboard = [
-        [InlineKeyboardButton(f"🎮 المستوى {user.level} ({level_name}) | ⭐ {user.points}", callback_data="stats")],
-        [InlineKeyboardButton("🧩 ألغاز", callback_data="game_puzzle"), InlineKeyboardButton("❓ أسئلة", callback_data="game_quiz")],
-        [InlineKeyboardButton("🧠 ذاكرة", callback_data="game_memory"), InlineKeyboardButton("⚡ سرعة", callback_data="game_speed")],
-        [InlineKeyboardButton("🎯 تحدي", callback_data="daily_challenge"), InlineKeyboardButton("📊 إحصائيات", callback_data="stats")],
-        [InlineKeyboardButton("💡 نصائح AI", callback_data="ai_tips"), InlineKeyboardButton("🎁 مكافأة", callback_data="daily_bonus")],
+        [InlineKeyboardButton(f"💰 الرصيد: {user.balance:.2f} USDT", callback_data="wallet")],
+        [InlineKeyboardButton("🟢 إيداع", callback_data="deposit"), InlineKeyboardButton("🔴 سحب", callback_data="withdraw")],
+        [InlineKeyboardButton("📤 تحويل", callback_data="transfer"), InlineKeyboardButton("📜 سِجل", callback_data="transactions")],
+        [InlineKeyboardButton("⭐ نقاطي: {user.points}", callback_data="points")],
+        [InlineKeyboardButton("🎁 مكافأة", callback_data="daily_bonus"), InlineKeyboardButton("🔗 إحالة", callback_data="referral")],
+        [InlineKeyboardButton("💳 طرق الدفع", callback_data="payment_methods"), InlineKeyboardButton("📊 إحصائيات", callback_data="stats")],
+        [InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def games_keyboard():
-    keyboard = []
-    for game_key, game in GAMES.items():
-        keyboard.append([InlineKeyboardButton(f"{game['name']} (+{game['base_points']}+{game['win_bonus']})", callback_data=f"play_{game_key}")])
-    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back")])
+def wallet_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("🟢 إيداع", callback_data="deposit")],
+        [InlineKeyboardButton("🔴 سحب", callback_data="withdraw")],
+        [InlineKeyboardButton("📤 تحويل", callback_data="transfer")],
+        [InlineKeyboardButton("📜 سجل المعاملات", callback_data="transactions")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back")],
+    ]
     return InlineKeyboardMarkup(keyboard)
 
-def difficulty_keyboard(game_type: str):
+def deposit_keyboard():
     keyboard = [
-        [InlineKeyboardButton("🟢 سهل", callback_data=f"diff_easy_{game_type}")],
-        [InlineKeyboardButton("🟡 متوسط", callback_data=f"diff_medium_{game_type}")],
-        [InlineKeyboardButton("🔴 صعب", callback_data=f"diff_hard_{game_type}")],
+        [InlineKeyboardButton("💳 بطاقة بنكية", callback_data="deposit_card")],
+        [InlineKeyboardButton("₿ USDT", callback_data="deposit_crypto")],
+        [InlineKeyboardButton("📱 محفظة إلكترونية", callback_data="deposit_wallet")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def subscription_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("⭐ Basic - 4.99$/شهر", callback_data="sub_basic")],
+        [InlineKeyboardButton("💎 Premium - 9.99$/شهر", callback_data="sub_premium")],
+        [InlineKeyboardButton("👑 VIP - 19.99$/شهر", callback_data="sub_vip")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -583,49 +612,144 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     user_id = user.id
     
+    # معالجة الإحالة
+    args = context.args
+    if args:
+        ref_code = args[0]
+        users = db.load_users()
+        for uid, udata in users.items():
+            if udata.get("referral_code") == ref_code and int(uid) != user_id:
+                if not get_user(user_id).referred_by:
+                    update_user(user_id, {"referred_by": int(uid)})
+                    process_referral(int(uid), user_id)
+                break
+    
     user_data = get_user(user_id)
     level_name, _ = get_level_info(user_data.level)
     
-    welcome = f"""🎮 مرحباً {user.first_name}!
+    welcome = f"""💰 مرحباً {user.first_name}!
 
-✨ نظام اللعب الذكي:
-• كل لعبة تكسب نقاط!
-• الفوز يمنح نقاط إضافية
-• السلسلة تزيد المكافآت
-• المستوى يرفع النقاط
+🏦 محفظتك:
+• الرصيد: {user_data.balance:.2f} USDT
+• الحالة: {user_data.wallet_status}
 
-🎯 الألعاب:
-• 🧩 ألغاز منطقية
-• ❓ أسئلة عامة
-• 🧠 ذاكرة
-• ⚡ سرعة
-
-💰 كلعبة = {config.POINTS_PER_GAME} نقاط
-🏆 الفوز = +{config.WIN_BONUS} نقاط إضافية
-🔥 السلسلة = +{config.STREAK_BONUS} لكل سلسلة
-
-🎮 مستواك: {user_data.level} ({level_name})
 ⭐ نقاطك: {user_data.points}
-📈 خبرك: {user_data.experience}
+📊 مستواك: {level_name}
+
+🔗 كود الإحالة: `{user_data.referral_code}`
+
+💡 الأوامر:
+• إيداع [المبلغ]
+• سحب [المالع] [العنوان]
+• تحويل [المبلغ] [كود]
+• نقاط
+• مكافأة
 """
     await update.message.reply_text(welcome, reply_markup=main_menu_keyboard(user_id))
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def wallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    stats = get_user_stats(user_id)
-    await update.message.reply_text(stats, reply_markup=main_menu_keyboard(user_id))
-
-async def games_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = """🎮 اختر لعبة للعب:
+    user = get_user(user_id)
+    level_name, _ = get_level_info(user.level)
+    
+    text = f"""💰 محفظتك
 ━━━━━━━━━━━━━━━━
-كل لعبة تكسب نقاط بغض النظر عن النتيجة!
-"""
-    await update.message.reply_text(text, reply_markup=games_keyboard())
+💵 الرصيد: {user.balance:.2f} USDT
+⭐ النقاط: {user.points}
+🏆 المستوى: {level_name}
 
-async def bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+📊 الإحصائيات:
+• إجمالي الإيداعات: {user.total_deposited:.2f} USDT
+• إجمالي السحبات: {user.total_withdrawn:.2f} USDT
+• إجمالي التحويلات: {user.total_transferred:.2f} USDT
+
+📧 العنوان: `{user.wallet_address}`
+━━━━━━━━━━━━━━━━"""
+    await update.message.reply_text(text, reply_markup=wallet_keyboard())
+
+async def deposit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    success, msg = get_daily_bonus(user_id)
-    await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
+    
+    text = """🟢 الإيداع
+━━━━━━━━━━━━━━━━
+اختر طريقة الإيداع:
+"""
+    await update.message.reply_text(text, reply_markup=deposit_keyboard())
+
+async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user = get_user(user_id)
+    
+    text = f"""🔴 السحب
+━━━━━━━━━━━━━━━━
+💰 رصيدك: {user.balance:.2f} USDT
+📊 الحد الأدنى: {config.MIN_WITHDRAWAL} USDT
+📈 الحد اليومي: {config.MAX_WITHDRAWAL_DAILY} USDT
+📝 رسوم السحب: {config.WITHDRAWAL_FEE} USDT
+
+━━━━━━━━━━━━━━━━
+
+الصيغة:
+`سحب [المبلغ] [عنوان_المحفظة]`
+
+مثال:
+`سحب 10 0x1234567890...`
+"""
+    await update.message.reply_text(text, reply_markup=back_keyboard())
+
+async def transfer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user = get_user(user_id)
+    
+    text = f"""📤 التحويل
+━━━━━━━━━━━━━━━━
+💰 رصيدك: {user.balance:.2f} USDT
+📝 رسوم التحويل: {config.TRANSFER_FEE}%
+
+━━━━━━━━━━━━━━━━
+
+الصيغة:
+`تحويل [المبلغ] [كود_المستلم]`
+
+مثال:
+`تحويل 5 REFABC123`
+"""
+    await update.message.reply_text(text, reply_markup=back_keyboard())
+
+async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user = get_user(user_id)
+    level_name, _ = get_level_info(user.level)
+    
+    text = f"""⭐ نقاطي
+━━━━━━━━━━━━━━━━
+💰 الرصيد: {user.points} نقطة
+📊 إجمالي النقاط: {user.points_lifetime}
+🏆 مستواك: {level_name}
+
+💡 كيف تكسب:
+• الإيداع: 100 نقطة/USDT
+• الإحالة: {config.REFERRAL_BONUS} نقطة
+• المكافأة اليومية: {config.DAILY_BONUS} نقطة
+
+━━━━━━━━━━━━━━━━"""
+    await update.message.reply_text(text, reply_markup=main_menu_keyboard(user_id))
+
+async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user = get_user(user_id)
+    
+    text = f"""🔗 نظام الإحالة
+━━━━━━━━━━━━━━━━
+كود الإحالة: `{user.referral_code}`
+
+📊 إحصائياتك:
+• المُحالين: {user.referrals_count}
+• أرباحك: {user.referral_earnings} نقطة
+
+💡 شارك كودك واربح {config.REFERRAL_BONUS} نقطة لكل إحالة!
+━━━━━━━━━━━━━━━━"""
+    await update.message.reply_text(text, reply_markup=main_menu_keyboard(user_id))
 
 # ==================== CALLBACK HANDLERS ====================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -636,138 +760,133 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     if data == "back":
-        await start_command(update, context)
-    elif data == "stats":
-        stats = get_user_stats(user_id)
-        await query.edit_message_text(stats, reply_markup=main_menu_keyboard(user_id))
+        await wallet_command(update, context)
+    elif data == "wallet":
+        await wallet_command(update, context)
+    elif data == "deposit":
+        await deposit_command(update, context)
+    elif data == "withdraw":
+        await withdraw_command(update, context)
+    elif data == "transfer":
+        await transfer_command(update, context)
+    elif data == "points":
+        await points_command(update, context)
+    elif data == "referral":
+        await referral_command(update, context)
     elif data == "daily_bonus":
-        success, msg = get_daily_bonus(user_id)
+        success, msg = claim_daily_bonus(user_id)
         await query.edit_message_text(msg, reply_markup=main_menu_keyboard(user_id))
-    elif data == "ai_tips":
+    elif data == "transactions":
+        txns = get_user_transactions(user_id)
+        text = "📜 سجل المعاملات\n━━━━━━━━━━━━━━━━\n"
+        for t in txns[:10]:
+            emoji = "✅" if t.status == "مكتمل" else "⏳"
+            text += f"{emoji} {t.type}: {t.amount} USDT\n"
+            text += f"   📅 {t.created_at[:10]}\n\n"
+        await query.edit_message_text(text, reply_markup=wallet_keyboard())
+    elif data == "stats":
         user = get_user(user_id)
-        tip = ai.get_tip("puzzle")
-        analysis = ai.analyze_performance(user)
-        suggestion = ai.suggest_game(user)
+        level_name, _ = get_level_info(user.level)
         await query.edit_message_text(
-            f"🤖 نصائح AI\n━━━━━━━━━━━━━━━━\n\n"
-            f"{tip}\n\n{analysis}\n\n{suggestion}",
+            f"📊 إحصائياتك\n━━━━━━━━━━━━━━━━\n"
+            f"🏆 المستوى: {level_name}\n"
+            f"💰 الرصيد: {user.balance:.2f} USDT\n"
+            f"⭐ النقاط: {user.points}\n"
+            f"📥 الإيداعات: {user.total_deposited:.2f}\n"
+            f"📤 السحبات: {user.total_withdrawn:.2f}\n"
+            f"🔗 الإحالات: {user.referrals_count}\n"
+            f"💵 أرباح الإحالة: {user.referral_earnings}",
             reply_markup=main_menu_keyboard(user_id)
         )
-    elif data.startswith("game_"):
-        game_type = data.replace("game_", "")
-        if game_type in GAMES:
-            game = GAMES[game_type]
-            await query.edit_message_text(
-                f"{game['name']}\n"
-                f"{game['description']}\n\n"
-                f"📊 النقاط:\n"
-                f"• الأساسية: {game['base_points']}\n"
-                f"• الفوز: +{game['win_bonus']}\n\n"
-                f"اختر المستوى:",
-                reply_markup=difficulty_keyboard(game_type)
-            )
-    elif data.startswith("play_"):
-        game_type = data.replace("play_", "")
-        if game_type in GAMES:
-            game = GAMES[game_type]
-            await query.edit_message_text(
-                f"🎮 {game['name']}\n\n"
-                f"أرسل إجابتك الآن!\n"
-                f"مثال: جواب 42\n\n"
-                f"💡 كل محاولة تكسب {game['base_points']} نقاط",
-                reply_markup=back_keyboard()
-            )
-    elif data.startswith("diff_"):
-        parts = data.split("_")
-        difficulty = parts[1]
-        game_type = parts[2]
-        
-        if game_type == "puzzle":
-            puzzle = get_puzzle(difficulty)
-            await query.edit_message_text(
-                f"🧩 لغز ({difficulty})\n\n"
-                f"{puzzle['question']}\n\n"
-                f"أرسل: جواب [إجابتك]",
-                reply_markup=back_keyboard()
-            )
-        elif game_type == "quiz":
-            quiz = get_quiz_question(difficulty)
-            options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(quiz['options'])])
-            await query.edit_message_text(
-                f"❓ سؤال ({difficulty})\n\n"
-                f"{quiz['question']}\n\n"
-                f"{options_text}\n\n"
-                f"أرسل: جواب [رقم_الإجابة]",
-                reply_markup=back_keyboard()
-            )
+    elif data.startswith("deposit_"):
+        method = data.replace("deposit_", "")
+        await query.edit_message_text(
+            f"🟢 إيداع عبر {method}\n\n"
+            f"أرسل المبلغ الذي تريد إيداعه:\n"
+            f"مثال: `إيداع 100`",
+            reply_markup=back_keyboard()
+        )
+    elif data.startswith("sub_"):
+        tier = data.replace("sub_", "")
+        prices = {"basic": "4.99", "premium": "9.99", "vip": "19.99"}
+        await query.edit_message_text(
+            f"💎 اشتراك {tier}\n\n"
+            f"السعر: ${prices[tier]}/شهر\n\n"
+            f"للاشتراك، أرسل: `اشتراك {tier}`",
+            reply_markup=back_keyboard()
+        )
 
 # ==================== MESSAGE HANDLER ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.message.from_user.id
-    user = get_user(user_id)
     
-    # جواب
-    if text.startswith("جواب "):
-        answer = text.replace("جواب ", "").strip()
-        
-        # استخدام آخر لعبة لعبها المستخدم
-        sessions = db.load_sessions()
-        user_sessions = [s for s in sessions if s["user_id"] == user_id]
-        
-        if user_sessions:
-            last_game = user_sessions[-1]["game_type"]
-            won, msg, points = play_game(user_id, last_game, answer)
-            await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
-        else:
-            await update.message.reply_text("❌ اختر لعبة أولاً من القائمة!")
-        return
-    
-    # لعبة مباشرة
-    if text.startswith("لعب "):
+    # إيداع
+    if text.startswith("إيداع "):
         try:
-            parts = text.replace("لعب ", "").split(" ", 1)
-            game_type = parts[0]
-            answer = parts[1] if len(parts) > 1 else ""
-            
-            if game_type in GAMES:
-                won, msg, points = play_game(user_id, game_type, answer)
-                await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
-            else:
-                await update.message.reply_text("❌ اللعبة غير موجودة!")
+            amount = float(text.replace("إيداع ", ""))
+            success, msg = deposit(user_id, amount)
+            await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
         except:
-            await update.message.reply_text("❌ الصيغة: `لعب puzzle إجابتك`")
+            await update.message.reply_text("❌ الصيغة: `إيداع 100`")
         return
     
-    # لغز
-    if text == "لغز" or text == "🧩":
-        puzzle = get_puzzle("medium")
-        await update.message.reply_text(
-            f"🧩 لغز\n\n{puzzle['question']}\n\nأرسل: جواب [إجابتك]",
-            reply_markup=back_keyboard()
-        )
+    # سحب
+    if text.startswith("سحب "):
+        try:
+            parts = text.replace("سحب ", "").split()
+            amount = float(parts[0])
+            address = parts[1] if len(parts) > 1 else ""
+            
+            if not address:
+                await update.message.reply_text("❌ أدخل عنوان المحفظة!")
+                return
+            
+            success, msg = withdraw(user_id, amount, address)
+            await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
+        except:
+            await update.message.reply_text("❌ الصيغة: `سحب 10 0x123...`")
         return
     
-    # سؤال
-    if text == "سؤال" or text == "❓":
-        quiz = get_quiz_question("medium")
-        options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(quiz['options'])])
-        await update.message.reply_text(
-            f"❓ سؤال\n\n{quiz['question']}\n\n{options_text}\n\nأرسل: جواب [رقم]",
-            reply_markup=back_keyboard()
-        )
+    # تحويل
+    if text.startswith("تحويل "):
+        try:
+            parts = text.replace("تحويل ", "").split()
+            amount = float(parts[0])
+            code = parts[1] if len(parts) > 1 else ""
+            
+            success, msg = transfer(user_id, code, amount)
+            await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
+        except:
+            await update.message.reply_text("❌ الصيغة: `تحويل 10 REFABC123`")
+        return
+    
+    # نقاط
+    if text == "نقاط" or text == "⭐":
+        await points_command(update, context)
         return
     
     # مكافأة
     if text == "مكافأة" or text == "🎁":
-        success, msg = get_daily_bonus(user_id)
+        success, msg = claim_daily_bonus(user_id)
         await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
         return
     
-    # إحصائيات
-    if text == "إحصائيات" or text == "📊":
-        stats = get_user_stats(user_id)
-        await update.message.reply_text(stats, reply_markup=main_menu_keyboard(user_id))
+    # اشتراك
+    if text.startswith("اشتراك "):
+        tier = text.replace("اشتراك ", "").strip()
+        if tier in ["basic", "premium", "vip"]:
+            sub = create_subscription(user_id, tier)
+            await update.message.reply_text(
+                f"✅ تم إنشاء الاشتراك!\n\n"
+                f"💎 الخطة: {tier}\n"
+                f"💰 السعر: ${sub.price}\n"
+                f"📅 ينتهي: {sub.end_date[:10]}\n\n"
+                f"للدفع، استخدم /pay",
+                reply_markup=main_menu_keyboard(user_id)
+            )
+        else:
+            await update.message.reply_text("❌ الخطط المتاحة: basic, premium, vip")
         return
     
     await update.message.reply_text("❌ أمر غير معروف!\n\n/start", reply_markup=main_menu_keyboard(user_id))
@@ -777,31 +896,27 @@ def main():
     app = Application.builder().token(config.BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("games", games_menu_command))
-    app.add_handler(CommandHandler("bonus", bonus_command))
+    app.add_handler(CommandHandler("wallet", wallet_command))
+    app.add_handler(CommandHandler("إيداع", deposit_command))
+    app.add_handler(CommandHandler("سحب", withdraw_command))
+    app.add_handler(CommandHandler("تحويل", transfer_command))
+    app.add_handler(CommandHandler("نقاط", points_command))
+    app.add_handler(CommandHandler("referral", referral_command))
     app.add_handler(CommandHandler("help", lambda u, c: u.message.reply_text("""الأوامر:
 /start - بدء
-/stats - إحصائياتك
-/games - الألعاب
-/bonus - مكافأة يومية
-
-الألعاب:
-لعب puzzle إجابتك
-لعب quiz 1
-لغز
-سؤال
-
-النقاط:
-• كل لعبة: 10+ نقاط
-• الفوز: +20 نقطة
-• السلسلة: +5 لكل سلسلة
-"""))
+/wallet - المحفظة
+إيداع [المبلغ]
+سحب [المبلغ] [العنوان]
+تحويل [المبلغ] [كود]
+نقاط
+مكافأة
+اشتراك [basic/premium/vip]
+""")))
     
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(handle_message))
     
-    print("🎮 Smart Game Bot is running...")
+    print("💰 Smart Wallet Bot is running...")
     app.run_polling(allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
