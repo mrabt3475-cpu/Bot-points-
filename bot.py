@@ -1,5 +1,5 @@
 """
-🎮 PvP Games Bot - ألعاب ضد الأصدقاء
+🎮 PvP Games Bot - ألعاب ضد الأصدقاء + نظام الدمج
 """
 
 from __future__ import annotations
@@ -7,6 +7,7 @@ import os
 import json
 import random
 import string
+import threading
 from datetime import datetime
 from typing import Dict, List, Tuple
 from dataclasses import dataclass, field, asdict
@@ -19,18 +20,27 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
 
+try:
+    from flask import Flask, request, jsonify
+    FLASK_AVAILABLE = True
+except ImportError:
+    FLASK_AVAILABLE = False
+
+# ==================== CONFIG ====================
 class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN", "8593254152:AAFm59iuO45KmWqnlxb0ufDPRN8kDH6mjGc")
     MIN_POINTS = 0.01
     MAX_POINTS = 2.0
     MAX_LOBBY_PLAYERS = 10
     DB_PATH = "./data"
+    API_PORT = 5000
 
 config = Config()
 
 logging.basicConfig(format='%(asctime)s | %(levelname)-8s | %(message)s', level=logging.INFO)
 logger = logging.getLogger("PvPGamesBot")
 
+# ==================== DATA CLASSES ====================
 @dataclass
 class User:
     user_id: int
@@ -53,6 +63,7 @@ class GameRoom:
     questions: List[Dict] = field(default_factory=list)
     current_question: int = 0
 
+# ==================== DATABASE ====================
 class Database:
     def __init__(self, db_path: str = config.DB_PATH):
         self.db_path = db_path
@@ -96,6 +107,7 @@ class Database:
 
 db = Database()
 
+# ==================== HELPERS ====================
 def generate_id(prefix: str = "ID", length: int = 6) -> str:
     return f"{prefix}{''.join(random.choices(string.ascii_uppercase + string.digits, k=length))}"
 
@@ -118,6 +130,7 @@ def get_random_points() -> float:
     """نقاط عشوائية بين 0.01 و 2"""
     return round(random.uniform(config.MIN_POINTS, config.MAX_POINTS), 2)
 
+# ==================== GAMES CONTENT ====================
 QUIZ_BATTLE = [
     {"q": "ما عاصمة فرنسا؟", "a": "باريس"},
     {"q": "من مكتشف أمريكا؟", "a": "كولومبوس"},
@@ -133,6 +146,7 @@ MATH_RACE = [
     {"q": "15 × 15 - 25", "a": "200"},
 ]
 
+# ==================== GAME ENGINE ====================
 class PvPGameEngine:
     @staticmethod
     def create_room(host_id: int, game_type: str) -> GameRoom:
@@ -250,6 +264,133 @@ class PvPGameEngine:
                 return GameRoom(**r)
         return None
 
+# ==================== INTEGRATION SYSTEM ====================
+class BotIntegration:
+    """نظام دمج البوت مع بوتات أخرى"""
+
+    def __init__(self, host="0.0.0.0", port=5000):
+        self.app = Flask(__name__)
+        self.host = host
+        self.port = port
+        self._setup_routes()
+
+    def _setup_routes(self):
+        """إعداد المسارات API"""
+
+        @self.app.route('/api/health', methods=['GET'])
+        def health():
+            return jsonify({"status": "ok", "bot": "PvP Games Bot"})
+
+        @self.app.route('/api/points/<int:user_id>', methods=['GET'])
+        def get_user_points(user_id):
+            """جلب نقاط مستخدم"""
+            user = get_user(user_id)
+            return jsonify({
+                "user_id": user_id,
+                "points": user.points,
+                "games_played": user.games_played,
+                "games_won": user.games_won
+            })
+
+        @self.app.route('/api/add_points', methods=['POST'])
+        def add_points_api():
+            """إضافة نقاط لمستخدم"""
+            data = request.json
+            user_id = data.get('user_id')
+            points = data.get('points', 0)
+
+            if not user_id:
+                return jsonify({"error": "user_id required"}), 400
+
+            user = get_user(user_id)
+            update_user(user_id, {"points": user.points + points})
+
+            return jsonify({
+                "success": True,
+                "user_id": user_id,
+                "new_points": user.points + points
+            })
+
+        @self.app.route('/api/stats/<int:user_id>', methods=['GET'])
+        def get_user_stats(user_id):
+            """جلب إحصائيات مستخدم"""
+            user = get_user(user_id)
+            return jsonify({
+                "user_id": user_id,
+                "points": user.points,
+                "games_played": user.games_played,
+                "games_won": user.games_won,
+                "games_lost": user.games_lost,
+                "current_streak": user.current_streak,
+                "best_streak": user.best_streak
+            })
+
+        @self.app.route('/api/leaderboard', methods=['GET'])
+        def get_leaderboard():
+            """جلب قائمة المتصدرين"""
+            users = db.users
+            sorted_users = sorted(
+                users.items(), 
+                key=lambda x: x[1].get('points', 0), 
+                reverse=True
+            )[:10]
+
+            leaderboard = []
+            for i, (uid, data) in enumerate(sorted_users, 1):
+                leaderboard.append({
+                    "rank": i,
+                    "user_id": uid,
+                    "points": data.get('points', 0),
+                    "games_won": data.get('games_won', 0)
+                })
+
+            return jsonify({"leaderboard": leaderboard})
+
+        @self.app.route('/api/game/start', methods=['POST'])
+        def start_game_api():
+            """بدء لعبة عبر API"""
+            data = request.json
+            user_id = data.get('user_id')
+            game_type = data.get('game_type', 'quiz_battle')
+
+            if not user_id:
+                return jsonify({"error": "user_id required"}), 400
+
+            room = PvPGameEngine.create_room(user_id, game_type)
+
+            return jsonify({
+                "success": True,
+                "room_id": room.id,
+                "game_type": game_type
+            })
+
+        @self.app.route('/api/game/answer', methods=['POST'])
+        def answer_game_api():
+            """إرسال إجابة عبر API"""
+            data = request.json
+            user_id = data.get('user_id')
+            answer = data.get('answer', '')
+
+            if not user_id:
+                return jsonify({"error": "user_id required"}), 400
+
+            room = PvPGameEngine.get_user_room(user_id)
+            if not room or room.status != "playing":
+                return jsonify({"error": "No active game"}), 400
+
+            success, msg = PvPGameEngine.answer_question(room.id, user_id, answer)
+
+            return jsonify({
+                "success": success,
+                "message": msg
+            })
+
+    def run(self):
+        """تشغيل الخادم"""
+        print(f"🌐 API Server running on http://{self.host}:{self.port}")
+        self.app.run(host=self.host, port=self.port)
+
+# ==================== KEYBOARDS ====================
 def main_menu_keyboard(user_id: int):
     user = get_user(user_id)
     keyboard = [
@@ -268,6 +409,7 @@ def game_types_keyboard():
 def back_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="back")]])
 
+# ==================== BOT HANDLERS ====================
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.message.from_user
     user_id = user.id
@@ -284,6 +426,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 • كل إجابة صحيحة
 • من {config.MIN_POINTS} إلى {config.MAX_POINTS} نقطة
 • عشوائية تماماً!
+
+🌐 API متاح على: http://localhost:5000
 
 ⭐ نقاطك: {user_data.points:.2f}
 🎮 لعبت: {user_data.games_played}
@@ -391,16 +535,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(
         "⚔️ الأوامر:
 • `غرفة سؤال`
-• `انضم ROOM123`",
+• `انضم ROOM123`
+
+🌐 API: http://localhost:5000",
         reply_markup=main_menu_keyboard(user_id)
     )
 
+# ==================== MAIN ====================
 def main() -> None:
-    logger.info("⚔️ Starting PvP Games Bot...")
+    logger.info("⚔️ Starting PvP Games Bot with API...")
 
     if not TELEGRAM_AVAILABLE:
         logger.error("Telegram not available!")
         return
+
+    if not FLASK_AVAILABLE:
+        logger.warning("Flask not available! API will not start.")
 
     app = Application.builder().token(config.BOT_TOKEN).build()
 
@@ -408,6 +558,13 @@ def main() -> None:
     app.add_handler(CommandHandler("stats", stats_handler))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(message_handler))
+
+    # Start API server in background
+    if FLASK_AVAILABLE:
+        api_server = BotIntegration(host="0.0.0.0", port=config.API_PORT)
+        api_thread = threading.Thread(target=api_server.run, daemon=True)
+        api_thread.start()
+        logger.info(f"🌐 API: http://localhost:{config.API_PORT}")
 
     logger.info("✅ Bot is running!")
     app.run_polling(allowed_updates=["message", "callback_query"])
