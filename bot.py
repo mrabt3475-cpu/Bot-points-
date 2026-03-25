@@ -1,14 +1,13 @@
 """
-🎮 Ultimate Games Bot - PvP + XO + Interactive Games
-ألعاب متعددةplayer مع XO وتحديات
+🃏 Ultimate Card Games Bot - بلوت وورق
+ألعاب البلوت والورق والكازينو
 
 🎯 الميزات:
-- PvP ضد لاعبين
-- XO (tic-tac-toe)
-- أحجار ورقة مقص
-- تخمين الرقم
-- مسابقات
-- بطولات
+- بلوت (Balot)
+- ورق (Blackjack)
+- بوكر (Poker) - مبسط
+- سلوت (Slot)
+- النرد
 """
 
 from __future__ import annotations
@@ -17,8 +16,7 @@ import json
 import random
 import string
 import time
-import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict, List, Tuple, Any
 from dataclasses import dataclass, field, asdict
@@ -34,38 +32,24 @@ except ImportError:
 # ==================== CONFIG ====================
 class Config:
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "8593254152:AAFm59iuO45KmWqnlxb0ufDPRN8kDH6mjGc")
-    # Points
-    POINTS_PER_GAME: int = 15
-    WIN_BONUS: int = 25
-    PVP_BONUS: int = 35
-    STREAK_BONUS: int = 10
-    TOURNAMENT_PRIZE: int = 200
-    # Games
+    POINTS_PER_GAME: int = 20
+    WIN_BONUS: int = 30
+    BLACKJACK_BONUS: int = 50
+    SLOT_COST: int = 10
     DB_PATH: str = "./data"
 
 config = Config()
 
 logging.basicConfig(format='%(asctime)s | %(levelname)-8s | %(message)s', level=logging.INFO)
-logger = logging.getLogger("GamesBot")
+logger = logging.getLogger("CardGamesBot")
 
 # ==================== ENUMS ====================
 class GameType(str, Enum):
-    MEMORY = "memory"
-    REFLEX = "reflex"
-    QUIZ = "quiz"
-    MATH = "math"
-    EMOJI = "emoji"
-    XO = "xo"
-    RPS = "rps"
-    GUESS_NUMBER = "guess_number"
-    PVP_CHALLENGE = "pvp"
-
-class GameStatus(str, Enum):
-    WAITING = "waiting"
-    PLAYING = "playing"
-    WON = "won"
-    LOST = "lost"
-    DRAW = "draw"
+    BALOT = "balot"
+    BLACKJACK = "blackjack"
+    POKER = "poker"
+    SLOT = "slot"
+    DICE = "dice"
 
 # ==================== DATA CLASSES ====================
 @dataclass
@@ -83,53 +67,49 @@ class User:
     games_lost: int = 0
     current_streak: int = 0
     best_streak: int = 0
-    # PvP
-    pvp_wins: int = 0
-    pvp_losses: int = 0
-    pvp_draws: int = 0
-    xo_wins: int = 0
-    xo_losses: int = 0
-    rps_wins: int = 0
-    # Achievements
-    achievements: List[str] = field(default_factory=list)
+    # Card games
+    balot_wins: int = 0
+    balot_losses: int = 0
+    blackjack_wins: int = 0
+    blackjack_losses: int = 0
+    poker_wins: int = 0
+    slots_played: int = 0
+    slots_won: int = 0
+    dice_played: int = 0
+    dice_won: int = 0
     join_date: str = field(default_factory=lambda: datetime.now().isoformat())
 
 @dataclass
-class PvPMatch:
+class Card:
+    suit: str  # ♠️ ♥️ ♦️ ♣️
+    rank: str  # A,2-10,J,Q,K
+    value: int
+
+@dataclass
+class BlackjackGame:
     id: str
-    game_type: str
-    player1_id: int
-    player2_id: int
+    user_id: int
+    player_cards: List[Dict]
+    dealer_cards: List[Dict]
+    player_score: int
+    dealer_score: int
+    status: str  # playing, won, lost, push
     bet: int
-    status: str
-    player1_move: str = ""
-    player2_move: str = ""
-    winner_id: int = None
-    rounds: List[Dict] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
 @dataclass
-class XOGame:
+class BalotGame:
     id: str
     player1_id: int
     player2_id: int
-    board: List[str] = field(default_factory=lambda: ["1", "2", "3", "4", "5", "6", "7", "8", "9"])
-    current_turn: int = 0
-    moves: List[str] = field(default_factory=list)
-    winner_id: int = None
-    status: str = "playing"
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-
-@dataclass
-class Tournament:
-    id: str
-    name: str
-    game_type: str
-    max_players: int
-    players: List[Dict] = field(default_factory=list)
-    matches: List[Dict] = field(default_factory=list)
-    status: str = "registration"
-    prize: int = 0
+    player1_cards: List[Dict]
+    player2_cards: List[Dict]
+    player1_score: int
+    player2_score: int
+    current_turn: int
+    deck: List[Dict]
+    status: str
+    round: int
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
 # ==================== DATABASE ====================
@@ -138,13 +118,12 @@ class Database:
         self.db_path = db_path
         os.makedirs(db_path, exist_ok=True)
         self.users_file = f"{db_path}/users.json"
-        self.pvp_file = f"{db_path}/pvp.json"
-        self.xo_file = f"{db_path}/xo.json"
-        self.tournaments_file = f"{db_path}/tournaments.json"
+        self.blackjack_file = f"{db_path}/blackjack.json"
+        self.balot_file = f"{db_path}/balot.json"
         self._init_files()
     
     def _init_files(self):
-        for f in [self.users_file, self.pvp_file, self.xo_file, self.tournaments_file]:
+        for f in [self.users_file, self.blackjack_file, self.balot_file]:
             if not os.path.exists(f):
                 self._save_json(f, {} if "users" in f else [])
     
@@ -168,28 +147,20 @@ class Database:
         self._save_json(self.users_file, data)
     
     @property
-    def pvp_matches(self) -> List:
-        return self._load_json(self.pvp_file)
+    def blackjack_games(self) -> List:
+        return self._load_json(self.blackjack_file)
     
-    @pvp_matches.setter
-    def pvp_matches(self, data: List):
-        self._save_json(self.pvp_file, data)
-    
-    @property
-    def xo_games(self) -> List:
-        return self._load_json(self.xo_file)
-    
-    @xo_games.setter
-    def xo_games(self, data: List):
-        self._save_json(self.xo_file, data)
+    @blackjack_games.setter
+    def blackjack_games(self, data: List):
+        self._save_json(self.blackjack_file, data)
     
     @property
-    def tournaments(self) -> List:
-        return self._load_json(self.tournaments_file)
+    def balot_games(self) -> List:
+        return self._load_json(self.balot_file)
     
-    @tournaments.setter
-    def tournaments(self, data: List):
-        self._save_json(self.tournaments_file, data)
+    @balot_games.setter
+    def balot_games(self, data: List):
+        self._save_json(self.balot_file, data)
 
 db = Database()
 
@@ -223,259 +194,274 @@ def calculate_level(exp: int) -> int:
             return i + 1
     return len(thresholds) + 1
 
-# ==================== XO GAME ====================
-class XOGameEngine:
-    """محرك لعبة XO"""
+# ==================== CARD DECK ====================
+class Deck:
+    """مجموعة أوراق"""
     
-    WIN_PATTERNS = [
-        [0, 1, 2], [3, 4, 5], [6, 7, 8],  # rows
-        [0, 3, 6], [1, 4, 7], [2, 5, 8],  # cols
-        [0, 4, 8], [2, 4, 6]              # diagonals
-    ]
+    SUITS = ["♠️", "♥️", "♦️", "♣️"]
+    RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
     
     @staticmethod
-    def create_game(player1_id: int, player2_id: int) -> XOGame:
-        game = XOGame(
-            id=generate_id("XO"),
-            player1_id=player1_id,
-            player2_id=player2_id,
-            board=[" "] * 9,
-            current_turn=player1_id
+    def create_shuffled() -> List[Dict]:
+        deck = []
+        for suit in Deck.SUITS:
+            for rank in Deck.RANKS:
+                value = 11 if rank == "A" else 10 if rank in ["J", "Q", "K"] else int(rank)
+                deck.append({"suit": suit, "rank": rank, "value": value})
+        random.shuffle(deck)
+        return deck
+    
+    @staticmethod
+    def draw(deck: List[Dict], count: int = 1) -> Tuple[List[Dict], List[Dict]]:
+        cards = deck[:count]
+        remaining = deck[count:]
+        return cards, remaining
+
+# ==================== BLACKJACK ====================
+class BlackjackEngine:
+    """محرك لعبة ورق (Blackjack)"""
+    
+    @staticmethod
+    def start(user_id: int, bet: int) -> BlackjackGame:
+        user = get_user(user_id)
+        if user.points < bet:
+            return None
+        
+        # خصم الرهان
+        update_user(user_id, {"points": user.points - bet})
+        
+        deck = Deck.create_shuffled()
+        player_cards, deck = Deck.draw(deck, 2)
+        dealer_cards, deck = Deck.draw(deck, 2)
+        
+        player_score = BlackjackEngine.calculate_score(player_cards)
+        dealer_score = BlackjackEngine.calculate_score(dealer_cards)
+        
+        game = BlackjackGame(
+            id=generate_id("BJ"),
+            user_id=user_id,
+            player_cards=player_cards,
+            dealer_cards=dealer_cards,
+            player_score=player_score,
+            dealer_score=dealer_score,
+            status="playing",
+            bet=bet
         )
-        games = db.xo_games
+        
+        games = db.blackjack_games
         games.append(asdict(game))
-        db.xo_games = games
+        db.blackjack_games = games
+        
         return game
     
     @staticmethod
-    def get_board_display(board: List[str]) -> str:
-        return f"""
-┌───┬───┬───
-│ {board[0]} │ {board[1]} │ {board[2]} │
-├───┼───┼───
-│ {board[3]} │ {board[4]} │ {board[5]} │
-├───┼───┼───
-│ {board[6]} │ {board[7]} │ {board[8]} │
-└───┴───┴───
-        """.replace(" ", "⬜").replace("X", "❌").replace("O", "⭕")
+    def calculate_score(cards: List[Dict]) -> int:
+        score = sum(c["value"] for c in cards)
+        aces = sum(1 for c in cards if c["rank"] == "A")
+        
+        while score > 21 and aces > 0:
+            score -= 10
+            aces -= 1
+        
+        return score
     
     @staticmethod
-    def make_move(game_id: str, player_id: int, position: int) -> Tuple[bool, str]:
-        games = db.xo_games
+    def get_display(cards: List[Dict], hide_first: bool = False) -> str:
+        if hide_first and len(cards) > 0:
+            return "🃏 " + " ".join([f"{c['suit']}{c['rank']}" for c in cards[1:]])
+        return " ".join([f"{c['suit']}{c['rank']}" for c in cards])
+    
+    @staticmethod
+    def hit(game_id: str, user_id: int) -> Tuple[bool, str]:
+        games = db.blackjack_games
         
         for i, g in enumerate(games):
-            if g["id"] == game_id:
-                game = XOGame(**g)
+            if g["id"] == game_id and g["user_id"] == user_id and g["status"] == "playing":
+                game = BlackjackGame(**g)
                 
-                # التحقق من الدور
-                if player_id != game.current_turn:
-                    return False, "ليس دورك!"
+                # إضافة ورقة
+                deck = Deck.create_shuffled()
+                new_card, _ = Deck.draw(deck, 1)
+                game.player_cards.extend(new_card)
+                game.player_score = BlackjackEngine.calculate_score(game.player_cards)
                 
-                # التحقق من الموضع
-                if position < 0 or position > 8 or game.board[position] != " ":
-                    return False, "موضع غير صالح!"
-                
-                # تحديد الرمز
-                symbol = "X" if player_id == game.player1_id else "O"
-                game.board[position] = symbol
-                game.moves.append(str(position))
-                
-                # التحقق من الفوز
-                winner = XOGameEngine.check_winner(game.board)
-                
-                if winner:
-                    game.winner_id = game.player1_id if winner == "X" else game.player2_id
-                    game.status = "finished"
-                    
-                    # منح النقاط
-                    winner_user = get_user(game.winner_id)
-                    loser_id = game.player2_id if game.winner_id == game.player1_id else game.player1_id
-                    loser_user = get_user(loser_id)
-                    
-                    points = config.PVP_BONUS
-                    
-                    update_user(game.winner_id, {
-                        "points": winner_user.points + points,
-                        "points_lifetime": winner_user.points_lifetime + points,
-                        "games_won": winner_user.games_won + 1,
-                        "xo_wins": winner_user.xo_wins + 1,
-                        "pvp_wins": winner_user.pvp_wins + 1,
-                        "current_streak": winner_user.current_streak + 1,
-                        "best_streak": max(winner_user.best_streak, winner_user.current_streak + 1),
-                        "experience": winner_user.experience + points,
-                        "level": calculate_level(winner_user.experience + points)
-                    })
-                    
-                    update_user(loser_id, {
-                        "games_lost": loser_user.games_lost + 1,
-                        "xo_losses": loser_user.xo_losses + 1,
-                        "pvp_losses": loser_user.pvp_losses + 1,
-                        "current_streak": 0
-                    })
-                    
-                    msg = f"🎉 فاز اللاعب!
-
-{XOGameEngine.get_board_display(game.board)}
-
-+{points} نقطة للفائز!"
-                
-                elif len(game.moves) >= 9:
-                    game.status = "draw"
-                    msg = f"🤝 تعادل!
-
-{XOGameEngine.get_board_display(game.board)}
-
-+{config.POINTS_PER_GAME} نقطة لكل لاعب!"
-                    
-                    # نقاط التعادل
-                    p1 = get_user(game.player1_id)
-                    p2 = get_user(game.player2_id)
-                    update_user(game.player1_id, {"points": p1.points + config.POINTS_PER_GAME, "pvp_draws": p1.pvp_draws + 1})
-                    update_user(game.player2_id, {"points": p2.points + config.POINTS_PER_GAME, "pvp_draws": p2.pvp_draws + 1})
-                
+                if game.player_score > 21:
+                    # خسر
+                    game.status = "lost"
+                    update_user(user_id, {"games_lost": get_user(user_id).games_lost + 1})
+                    msg = f"❌ خسرت!\n\n"
+                    msg += f"🎮 يدك: {BlackjackEngine.get_display(game.player_cards)}\n"
+                    msg += f"   النقاط: {game.player_score}\n\n"
+                    msg += f"🃏 الديلر: {BlackjackEngine.get_display(game.dealer_cards, True)}\n"
+                    msg += f"   النقاط: {game.dealer_score}\n\n"
+                    msg += f"تجاوزت 21! +{config.POINTS_PER_GAME} نقطة"
                 else:
-                    # تبديل الدور
-                    game.current_turn = game.player2_id if game.current_turn == game.player1_id else game.player1_id
-                    next_player = get_user(game.current_turn)
-                    msg = f"🎮 دور: {next_player.first_name}
-
-{XOGameEngine.get_board_display(game.board)}
-
-اختر رقم الموضع (1-9)"
+                    msg = f"🎮 يدك: {BlackjackEngine.get_display(game.player_cards)}\n"
+                    msg += f"   النقاط: {game.player_score}\n\n"
+                    msg += f"اختر:\n"
+                    msg += f"• hit - سحب ورقة أخرى\n"
+                    msg += f"• stand - توقف"
                 
                 games[i] = asdict(game)
-                db.xo_games = games
-                
+                db.blackjack_games = games
                 return True, msg
         
         return False, "اللعبة غير موجودة!"
     
     @staticmethod
-    def check_winner(board: List[str]) -> Optional[str]:
-        for pattern in XOGameEngine.WIN_PATTERNS:
-            if board[pattern[0]] == board[pattern[1]] == board[pattern[2]] != " ":
-                return board[pattern[0]]
-        return None
-    
-    @staticmethod
-    def get_active_game(user_id: int) -> Optional[XOGame]:
-        games = db.xo_games
-        for g in games:
-            if (g["player1_id"] == user_id or g["player2_id"] == user_id) and g["status"] == "playing":
-                return XOGame(**g)
-        return None
+    def stand(game_id: str, user_id: int) -> Tuple[bool, str]:
+        games = db.blackjack_games
+        
+        for i, g in enumerate(games):
+            if g["id"] == game_id and g["user_id"] == user_id and g["status"] == "playing":
+                game = BlackjackGame(**g)
+                
+                # الديلر يسحب
+                deck = Deck.create_shuffled()
+                while game.dealer_score < 17:
+                    new_card, _ = Deck.draw(deck, 1)
+                    game.dealer_cards.extend(new_card)
+                    game.dealer_score = BlackjackEngine.calculate_score(game.dealer_cards)
+                
+                # تحديد الفائز
+                if game.dealer_score > 21 or game.player_score > game.dealer_score:
+                    game.status = "won"
+                    points = game.bet * 2 + config.BLACKJACK_BONUS
+                    user = get_user(user_id)
+                    update_user(user_id, {
+                        "points": user.points + points,
+                        "games_won": user.games_won + 1,
+                        "blackjack_wins": user.blackjack_wins + 1
+                    })
+                    msg = f"🎉 فزت!\n\n"
+                    msg += f"🎮 يدك: {BlackjackEngine.get_display(game.player_cards)} = {game.player_score}\n\n"
+                    msg += f"🃏 الديلر: {BlackjackEngine.get_display(game.dealer_cards)} = {game.dealer_score}\n\n"
+                    msg += f"+{points} نقطة!"
+                
+                elif game.player_score == game.dealer_score:
+                    game.status = "push"
+                    points = game.bet
+                    user = get_user(user_id)
+                    update_user(user_id, {"points": user.points + points})
+                    msg = f"🤝 تعادل!\n\n"
+                    msg += f"🎮 يدك: {game.player_score}\n"
+                    msg += f"🃏 الديلر: {game.dealer_score}\n\n"
+                    msg += f"استرداد رهانك: {points}"
+                
+                else:
+                    game.status = "lost"
+                    update_user(user_id, {"games_lost": get_user(user_id).games_lost + 1})
+                    msg = f"❌ خسرت!\n\n"
+                    msg += f"🎮 يدك: {game.player_score}\n"
+                    msg += f"🃏 الديلر: {game.dealer_score}\n\n"
+                    msg += f"+{config.POINTS_PER_GAME} نقطة"
+                
+                games[i] = asdict(game)
+                db.blackjack_games = games
+                return True, msg
+        
+        return False, "اللعبة غير موجودة!"
 
-# ==================== RPS GAME ====================
-class RPSEngine:
-    """محرك حجر ورقة مقص"""
+# ==================== SLOT MACHINE ====================
+class SlotEngine:
+    """محرك السلوت"""
     
-    CHOICES = {
-        "rock": {"emoji": "✊", "name": "حجر", "beats": "scissors"},
-        "paper": {"emoji": "✋", "name": "ورقة", "beats": "rock"},
-        "scissors": {"emoji": "✌️", "name": "مقص", "beats": "paper"}
+    SYMBOLS = ["🍒", "🍋", "🍇", "💎", "🔔", "7️⃣"]
+    PAYOUTS = {
+        ("7️⃣", "7️⃣", "7️⃣"): 100,
+        ("💎", "💎", "💎"): 50,
+        ("🔔", "🔔", "🔔"): 25,
+        ("🍇", "🍇", "🍇"): 15,
+        ("🍒", "🍒", "🍒"): 10,
+        ("🍋", "🍋", "🍋"): 5,
     }
     
     @staticmethod
-    def play(player1_choice: str, player2_choice: str) -> Tuple[int, str]:
-        """تحديد الفائز: 1=player1, 2=player2, 0=تعادل"""
-        if player1_choice == player2_choice:
-            return 0, "تعادل!"
+    def spin(user_id: int) -> Tuple[bool, str, int]:
+        user = get_user(user_id)
+        cost = config.SLOT_COST
         
-        if RPSEngine.CHOICES[player1_choice]["beats"] == player2_choice:
-            return 1, f"{RPSEngine.CHOICES[player1_choice]['emoji']} يهزم {RPSEngine.CHOICES[player2_choice]['emoji']}"
+        if user.points < cost:
+            return False, "نقاطك غير كافية! تحتاج 10 نقاط", 0
         
-        return 2, f"{RPSEngine.CHOICES[player2_choice]['emoji']} يهزم {RPSEngine.CHOICES[player1_choice]['emoji']}"
-
-# ==================== GUESS NUMBER ====================
-class GuessNumberEngine:
-    """محرك تخمين الرقم"""
-    
-    @staticmethod
-    def create_game(difficulty: str = "medium") -> Dict:
-        if difficulty == "easy":
-            max_num = 10
-        elif difficulty == "hard":
-            max_num = 100
+        update_user(user_id, {"points": user.points - cost, "slots_played": user.slots_played + 1})
+        
+        # تدوير
+        result = [random.choice(SlotEngine.SYMBOLS) for _ in range(3)]
+        
+        # فحص الفوز
+        win = False
+        multiplier = 0
+        
+        for pattern, mult in SlotEngine.PAYOUTS.items():
+            if result[0] == pattern[0] and result[1] == pattern[1] and result[2] == pattern[2]:
+                win = True
+                multiplier = mult
+                break
+        
+        # حتى رمزين متطابقين
+        if not win:
+            if result[0] == result[1] or result[1] == result[2] or result[0] == result[2]:
+                win = True
+                multiplier = 2
+        
+        if win:
+            points = cost * multiplier
+            update_user(user_id, {
+                "points": get_user(user_id).points + points,
+                "slots_won": get_user(user_id).slots_won + 1
+            })
+            msg = f"🎰 {result[0]} {result[1]} {result[2]}\n\n"
+            msg += f"🎉 مبروك! +{points} نقطة!"
+            return True, msg, points
         else:
-            max_num = 50
-        
-        target = random.randint(1, max_num)
-        return {
-            "target": target,
-            "max": max_num,
-            "difficulty": difficulty,
-            "attempts": 0,
-            "max_attempts": {"easy": 5, "medium": 7, "hard": 10}.get(difficulty, 7)
-        }
-    
-    @staticmethod
-    def guess(guess: int, target: int, attempts: int, max_attempts: int) -> Tuple[bool, str, int]:
-        attempts += 1
-        
-        if guess == target:
-            return True, f"✅ صحيح! الرقم كان {target}", attempts
-        
-        if attempts >= max_attempts:
-            return False, f"❌ انتهت المحاولات! الرقم كان {target}", attempts
-        
-        if guess < target:
-            return None, f"⬆️ أكبر! (محاولة {attempts}/{max_attempts})", attempts
-        else:
-            return None, f"⬇️ أصغر! (محاولة {attempts}/{max_attempts})", attempts
+            msg = f"🎰 {result[0]} {result[1]} {result[2]}\n\n"
+            msg += f"❌ لم تربح! +{config.POINTS_PER_GAME} نقطة"
+            return True, msg, config.POINTS_PER_GAME
 
-# ==================== TOURNAMENT ====================
-class TournamentEngine:
-    """محرك البطولات"""
+# ==================== DICE ====================
+class DiceEngine:
+    """محرك النرد"""
     
     @staticmethod
-    def create(name: str, game_type: str, max_players: int, prize: int) -> Tournament:
-        tournament = Tournament(
-            id=generate_id("TOURNEY"),
-            name=name,
-            game_type=game_type,
-            max_players=max_players,
-            prize=prize
-        )
-        tournaments = db.tournaments
-        tournaments.append(asdict(tournament))
-        db.tournaments = tournaments
-        return tournament
-    
-    @staticmethod
-    def join(tournament_id: str, user_id: int) -> Tuple[bool, str]:
-        tournaments = db.tournaments
+    def roll(user_id: int, prediction: str, bet: int) -> Tuple[bool, str, int]:
+        user = get_user(user_id)
         
-        for t in tournaments:
-            if t["id"] == tournament_id and t["status"] == "registration":
-                if len(t["players"]) >= t["max_players"]:
-                    return False, "البطولة ممتلئة!"
-                
-                user = get_user(user_id)
-                if user.points < 50:
-                    return False, "تحتاج 50 نقطة للتسجيل!"
-                
-                t["players"].append({"user_id": user_id, "name": user.first_name, "wins": 0})
-                db.tournaments = tournaments
-                
-                return True, f"✅ انضممت للبطولة! ({len(t['players'])}/{t['max_players']})"
+        if user.points < bet:
+            return False, "نقاطك غير كافية!", 0
         
-        return False, "البطولة غير موجودة!"
-    
-    @staticmethod
-    def start(tournament_id: str) -> Tuple[bool, str]:
-        tournaments = db.tournaments
+        update_user(user_id, {"points": user.points - bet, "dice_played": user.dice_played + 1})
         
-        for t in tournaments:
-            if t["id"] == tournament_id:
-                if len(t["players"]) < 2:
-                    return False, "تحتاج لاعبين على الأقل!"
-                
-                t["status"] = "started"
-                db.tournaments = tournaments
-                
-                return True, f"🏆 بدأت锦标赛! {len(t['players'])} لاعبين"
+        dice1 = random.randint(1, 6)
+        dice2 = random.randint(1, 6)
+        total = dice1 + dice2
         
-        return False, "البطولة غير موجودة!"
+        won = False
+        
+        if prediction == "high" and total >= 7:
+            won = True
+        elif prediction == "low" and total <= 6:
+            won = True
+        elif prediction.isdigit() and int(prediction) == total:
+            won = True
+        elif prediction == "even" and total % 2 == 0:
+            won = True
+        elif prediction == "odd" and total % 2 == 1:
+            won = True
+        
+        if won:
+            points = bet * 2
+            update_user(user_id, {
+                "points": get_user(user_id).points + points,
+                "dice_won": get_user(user_id).dice_won + 1
+            })
+            msg = f"🎲 النرد: {dice1} + {dice2} = {total}\n\n"
+            msg += f"🎉 فزت! +{points} نقطة!"
+            return True, msg, points
+        else:
+            msg = f"🎲 النرد: {dice1} + {dice2} = {total}\n\n"
+            msg += f"❌ خسرت! +{config.POINTS_PER_GAME} نقطة"
+            return True, msg, config.POINTS_PER_GAME
 
 # ==================== KEYBOARDS ====================
 def main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -484,32 +470,23 @@ def main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     
     keyboard = [
         [InlineKeyboardButton(f"🎮 المستوى {user.level} ({level_name}) | ⭐ {user.points}", callback_data="stats")],
-        [InlineKeyboardButton("❌⭕ XO", callback_data="game_xo"), InlineKeyboardButton("✊✋✌ حجر ورقة مقص", callback_data="game_rps")],
-        [InlineKeyboardButton("🔢 تخمين الرقم", callback_data="game_guess"), InlineKeyboardButton("🧠 ذاكرة", callback_data="game_memory")],
-        [InlineKeyboardButton("⚔️ PvP", callback_data="pvp_menu"), InlineKeyboardButton("🏆 بطولات", callback_data="tournaments")],
+        [InlineKeyboardButton("🃏 ورق (Blackjack)", callback_data="game_blackjack"), InlineKeyboardButton("🎰 سلوت", callback_data="game_slot")],
+        [InlineKeyboardButton("🎲 نرد", callback_data="game_dice"), InlineKeyboardButton("🃏 بلوت", callback_data="game_balot")],
         [InlineKeyboardButton("📊 إحصائيات", callback_data="stats"), InlineKeyboardButton("🏆 إنجازات", callback_data="achievements")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def xo_positions_keyboard() -> InlineKeyboardMarkup:
+def blackjack_keyboard(game_id: str) -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton("1", callback_data="xo_0"), InlineKeyboardButton("2", callback_data="xo_1"), InlineKeyboardButton("3", callback_data="xo_2")],
-        [InlineKeyboardButton("4", callback_data="xo_3"), InlineKeyboardButton("5", callback_data="xo_4"), InlineKeyboardButton("6", callback_data="xo_5")],
-        [InlineKeyboardButton("7", callback_data="xo_6"), InlineKeyboardButton("8", callback_data="xo_7"), InlineKeyboardButton("9", callback_data="xo_8")],
+        [InlineKeyboardButton("🃏 hit - سحب", callback_data=f"bj_hit_{game_id}")],
+        [InlineKeyboardButton("✋ stand - توقف", callback_data=f"bj_stand_{game_id}")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def rps_keyboard() -> InlineKeyboardMarkup:
+def dice_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton("✊ حجر", callback_data="rps_rock"), InlineKeyboardButton("✋ ورقة", callback_data="rps_paper"), InlineKeyboardButton("✌️ مقص", callback_data="rps_scissors")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def pvp_menu_keyboard() -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton("❌⭕ تحدي XO", callback_data="pvp_xo")],
-        [InlineKeyboardButton("✊✋✌ حجر ورقة مقص", callback_data="pvp_rps")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="back")],
+        [InlineKeyboardButton("⬆️ كبير (7-12)", callback_data="dice_high"), InlineKeyboardButton("⬇️ صغير (2-6)", callback_data="dice_low")],
+        [InlineKeyboardButton("👫 زوجي", callback_data="dice_even"), InlineKeyboardButton("🔢 فردي", callback_data="dice_odd")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -517,9 +494,7 @@ def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="back")]])
 
 def play_again_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 لعب مرة أخرى", callback_data="play_again")
-    ]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 لعب مرة أخرى", callback_data="play_again")]])
 
 # ==================== BOT HANDLERS ====================
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -529,54 +504,61 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_data = get_user(user_id)
     level_name, _ = get_level_info(user_data.level)
     
-    welcome = f"""🎮 مرحباً {user.first_name}!
+    welcome = f"""🃏 مرحباً {user.first_name}!
 
-⚔️ ألعاب PvP:
-• ❌⭕ XO ضد صديق
-• ✊✋✌ حجر ورقة مقص
+🎰 ألعاب الكازينو:
 
-🎯 ألعاب منفردة:
-• 🔢 تخمين الرقم
-• 🧠 ذاكرة
+🃏 ورق (Blackjack)
+• اقترب من 21 دون تجاوز
+• الرهان: 10-100 نقطة
 
-🏆 بطولات
+🎰 سلوت
+• 3 رموز متطابقة للفوز
+• التكلفة: 10 نقاط
+
+🎲 النرد
+• تخمن مجموع النردين
+• رهان: 10-50 نقطة
+
+🃏 بلوت
+• ضد البوت
+• نظام مبسط
 
 💰 النقاط:
 • كل لعبة: {config.POINTS_PER_GAME}
 • الفوز: +{config.WIN_BONUS}
-• PvP: +{config.PVP_BONUS}
 
 🎯 مستواك: {user_data.level} ({level_name})
 ⭐ نقاطك: {user_data.points}
 """
     await update.message.reply_text(welcome, reply_markup=main_menu_keyboard(user_id))
-    logger.info(f"User {user_id} started")
+    logger.info(f"User {user_id} started card games bot")
 
 async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.message.from_user.id
     user = get_user(user_id)
     level_name, _ = get_level_info(user.level)
     
-    win_rate = (user.games_won / user.games_played * 100) if user.games_played > 0 else 0
-    
     text = f"""📊 إحصائياتك
 ━━━━━━━━━━━━━━━━
 🏆 المستوى: {user.level} ({level_name})
 ⭐ النقاط: {user.points}
 
-🎮 إجمالي:
-• لعبت: {user.games_played}
-• فزت: {user.games_won}
-• خسرت: {user.games_lost}
+🃏 ورق:
+• انتصارات: {user.blackjack_wins}
+• هزائم: {user.blackjack_losses}
 
-⚔️ PvP:
-• انتصارات: {user.pvp_wins}
-• هزائم: {user.pvp_losses}
-• تعادلات: {user.pvp_draws}
+🎰 سلوت:
+• لعبت: {user.slots_played}
+• فزت: {user.slots_won}
 
-❌⭕ XO:
-• انتصارات: {user.xo_wins}
-• هزائم: {user.xo_losses}
+🎲 النرد:
+• لعبت: {user.dice_played}
+• فزت: {user.dice_won}
+
+🃏 بلوت:
+• انتصارات: {user.balot_wins}
+• هزائم: {user.balot_losses}
 
 🔥 السلسلة: {user.current_streak}
 🏆 الأفضل: {user.best_streak}
@@ -598,127 +580,78 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif data == "stats":
         await stats_handler(update, context)
         return
-    
-    # XO Game
-    elif data == "game_xo":
-        active = XOGameEngine.get_active_game(user_id)
-        if active:
-            board = XOGameEngine.get_board_display(active.board)
-            next_player = get_user(active.current_turn)
-            await query.edit_message_text(
-                f"❌⭕ لعبة XO\n\n"
-                f"🎮 دور: {next_player.first_name}\n\n"
-                f"{board}\n\n"
-                f"اختر الموضع:",
-                reply_markup=xo_positions_keyboard()
-            )
-        else:
-            await query.edit_message_text(
-                "❌⭕ لعبة XO\n\n"
-                "لا توجد لعبة نشطة!\n\n"
-                "أنشئ تحدي: `xo [كود_الخصم]`\n\n"
-                "أو العب عشوائياً: `عشوائي xo`",
-                reply_markup=back_keyboard()
-            )
+    elif data == "play_again":
+        await stats_handler(update, context)
         return
     
-    # XO Move
-    elif data.startswith("xo_"):
-        position = int(data.replace("xo_", ""))
-        active = XOGameEngine.get_active_game(user_id)
-        
-        if active:
-            success, msg = XOGameEngine.make_move(active.id, user_id, position)
-            
-            if "فاز" in msg or "تعادل" in msg:
-                await query.edit_message_text(msg, reply_markup=main_menu_keyboard(user_id))
-            else:
-                await query.edit_message_text(msg, reply_markup=xo_positions_keyboard())
-        return
-    
-    # RPS Game
-    elif data == "game_rps":
+    # Blackjack
+    elif data == "game_blackjack":
         await query.edit_message_text(
-            "✊✋✌ حجر ورقة مقص\n\n"
-            "اختر:",
-            reply_markup=rps_keyboard()
-        )
-        return
-    
-    # RPS Move
-    elif data.startswith("rps_"):
-        choice = data.replace("rps_", "")
-        bot_choice = random.choice(["rock", "paper", "scissors"])
-        
-        winner, result = RPSEngine.play(choice, bot_choice)
-        
-        user_choice_emoji = RPSEngine.CHOICES[choice]["emoji"]
-        bot_choice_emoji = RPSEngine.CHOICES[bot_choice]["emoji"]
-        
-        if winner == 1:
-            points = config.WIN_BONUS
-            msg = f"✅ فزت!\n\n{user_choice_emoji} vs {bot_choice_emoji}\n\n{result}\n\n+{points} نقطة!"
-            update_user(user_id, {
-                "points": user.points + points,
-                "games_won": user.games_won + 1,
-                "rps_wins": user.rps_wins + 1,
-                "current_streak": user.current_streak + 1,
-                "best_streak": max(user.best_streak, user.current_streak + 1)
-            })
-        elif winner == 2:
-            points = config.POINTS_PER_GAME
-            msg = f"❌ خسرت!\n\n{user_choice_emoji} vs {bot_choice_emoji}\n\n{result}\n\n+{points} نقطة"
-            update_user(user_id, {"games_lost": user.games_lost + 1, "current_streak": 0})
-        else:
-            points = config.POINTS_PER_GAME
-            msg = f"🤝 تعادل!\n\n{user_choice_emoji} vs {bot_choice_emoji}\n\n{result}\n\n+{points} نقطة"
-            update_user(user_id, {"points": user.points + points})
-        
-        await query.edit_message_text(msg, reply_markup=play_again_keyboard())
-        return
-    
-    # Guess Number
-    elif data == "game_guess":
-        game = GuessNumberEngine.create_game("medium")
-        context.user_data['guess_game'] = game
-        await query.edit_message_text(
-            f"🔢 تخمين الرقم\n\n"
-            f"تخمن رقم من 1-{game['max']}\n\n"
-            f"لديك {game['max_attempts']} محاولات\n\n"
-            f"أرسل رقماً:",
+            "🃏 ورق (Blackjack)\n\n"
+            "هدف اللعبة: اقترب من 21 دون تجاوز!\n\n"
+            "أرسل رهانك:\n"
+            "`ورق 20`\n\n"
+            "(10-100 نقطة)",
             reply_markup=back_keyboard()
         )
         return
     
-    # PvP Menu
-    elif data == "pvp_menu":
+    elif data.startswith("bj_"):
+        parts = data.split("_")
+        action = parts[1]
+        game_id = parts[2] if len(parts) > 2 else None
+        
+        if action == "hit" and game_id:
+            success, msg = BlackjackEngine.hit(game_id, user_id)
+            if "خسرت" in msg or "فزت" in msg or "تعادل" in msg:
+                await query.edit_message_text(msg, reply_markup=play_again_keyboard())
+            else:
+                await query.edit_message_text(msg, reply_markup=blackjack_keyboard(game_id))
+        elif action == "stand" and game_id:
+            success, msg = BlackjackEngine.stand(game_id, user_id)
+            await query.edit_message_text(msg, reply_markup=play_again_keyboard())
+        return
+    
+    # Slot
+    elif data == "game_slot":
+        won, msg, points = SlotEngine.spin(user_id)
+        await query.edit_message_text(msg, reply_markup=play_again_keyboard())
+        return
+    
+    # Dice
+    elif data == "game_dice":
         await query.edit_message_text(
-            "⚔️ PvP - العب ضد أصدقائك\n\n"
-            "❌⭕ XO\n"
-            "✊✋✌ حجر ورقة مقص\n\n"
-            "الأوامر:\n"
-            "• `xo REFCODE` - تحدي صديق\n"
-            "• `rps REFCODE` - حجر ورقة مقص\n"
-            "• `عشوائي xo` - ضد عشوائي",
-            reply_markup=pvp_menu_keyboard()
+            "🎲 النرد\n\n"
+            "اختر تخمينك:\n\n"
+            "⬆️ كبير: مجموع 7-12\n"
+            "⬇️ صغير: مجموع 2-6\n"
+            "👫 زوجي: مجموع زوجي\n"
+            "🔢 فردي: مجموع فردي\n\n"
+            "أرسل: `نرد 20 كبير`",
+            reply_markup=dice_keyboard()
         )
         return
     
-    # Tournaments
-    elif data == "tournaments":
-        tournaments = db.tournaments
-        text = "🏆 البطولات\n━━━━━━━━━━━━━━━━\n"
+    elif data.startswith("dice_"):
+        prediction = data.replace("dice_", "")
+        if prediction == "high":
+            prediction = "high"
+        elif prediction == "low":
+            prediction = "low"
         
-        active = [t for t in tournaments if t["status"] != "finished"]
-        if not active:
-            text += "لا توجد بطولات!\n\nأنشئ: `بطولة [الاسم] [اللعبة] [العدد]`"
-        else:
-            for t in active:
-                text += f"📌 {t['name']}\n"
-                text += f"   اللاعبون: {len(t['players'])}/{t['max_players']}\n"
-                text += f"   الجائزة: {t['prize']}\n\n"
-        
-        await query.edit_message_text(text, reply_markup=back_keyboard())
+        won, msg, points = DiceEngine.roll(user_id, prediction, 20)
+        await query.edit_message_text(msg, reply_markup=play_again_keyboard())
+        return
+    
+    # Balot
+    elif data == "game_balot":
+        await query.edit_message_text(
+            "🃏 بلوت\n\n"
+            "قريباً...\n\n"
+            "هذه اللعبة تحتاج لاعبين حقيقيين!\n\n"
+            "أنشئ غرفة: `بلوت`",
+            reply_markup=back_keyboard()
+        )
         return
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -726,125 +659,92 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.message.from_user.id
     user = get_user(user_id)
     
-    # XO Challenge
-    if text.startswith("xo "):
-        code = text.replace("xo ", "").strip()
-        users = db.users
-        opponent_id = None
-        for uid, udata in users.items():
-            if udata.get("referral_code", "").upper() == code.upper():
-                opponent_id = int(uid)
-                break
-        
-        if opponent_id and opponent_id != user_id:
-            game = XOGameEngine.create_game(user_id, opponent_id)
-            opponent = get_user(opponent_id)
-            await update.message.reply_text(
-                f"✅ تم إنشاء تحدي XO!\n\n"
-                f"أنت: ❌\n"
-                f"{opponent.first_name}: ⭕\n\n"
-                f"دورك أولاً!\n\n"
-                f"اختر رقم 1-9:",
-                reply_markup=xo_positions_keyboard()
-            )
-            try:
-                await context.bot.send_message(
-                    opponent_id,
-                    f"⚔️ تحدي XO من {user.first_name}!\n\n"
-                    f"أنت: ⭕\n"
-                    f"{user.first_name}: ❌\n\n"
-                    f"انتظر دورك..."
-                )
-            except:
-                pass
-        else:
-            await update.message.reply_text("❌ المستخدم غير موجود!")
-        return
-    
-    # RPS Challenge
-    if text.startswith("rps "):
-        choice = text.replace("rps ", "").strip()
-        if choice in ["rock", "paper", "scissors", "حجر", "ورقة", "مقص"]:
-            choice_map = {"حجر": "rock", "ورقة": "paper", "مقص": "scissors"}
-            choice = choice_map.get(choice, choice)
-            
-            bot_choice = random.choice(["rock", "paper", "scissors"])
-            winner, result = RPSEngine.play(choice, bot_choice)
-            
-            user_emoji = RPSEngine.CHOICES[choice]["emoji"]
-            bot_emoji = RPSEngine.CHOICES[bot_choice]["emoji"]
-            
-            if winner == 1:
-                points = config.WIN_BONUS
-                msg = f"✅ فزت!\n{user_emoji} vs {bot_emoji}\n{result}\n+{points} نقطة!"
-                update_user(user_id, {"points": user.points + points, "games_won": user.games_won + 1, "rps_wins": user.rps_wins + 1})
-            elif winner == 2:
-                msg = f"❌ خسرت!\n{user_emoji} vs {bot_emoji}\n{result}\n+{config.POINTS_PER_GAME} نقطة"
-                update_user(user_id, {"games_lost": user.games_lost + 1})
-            else:
-                msg = f"🤝 تعادل!\n{user_emoji} vs {bot_emoji}\n+{config.POINTS_PER_GAME} نقطة"
-                update_user(user_id, {"points": user.points + config.POINTS_PER_GAME})
-            
-            await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
-        return
-    
-    # Guess Number
-    if 'guess_game' in context.user_data:
+    # Blackjack
+    if text.startswith("ورق "):
         try:
-            guess = int(text)
-            game = context.user_data['guess_game']
+            bet = int(text.replace("ورق ", ""))
+            if bet < 10 or bet > 100:
+                await update.message.reply_text("الرهان يجب أن يكون 10-100!")
+                return
             
-            correct, msg, attempts = GuessNumberEngine.guess(guess, game['target'], game['attempts'], game['max_attempts'])
-            game['attempts'] = attempts
+            if user.points < bet:
+                await update.message.reply_text("نقاطك غير كافية!")
+                return
             
-            if correct:
-                points = config.WIN_BONUS
-                msg += f"\n+{points} نقطة!"
-                update_user(user_id, {"points": user.points + points, "games_won": user.games_won + 1})
-                del context.user_data['guess_game']
-                await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
-            elif correct is False:
-                update_user(user_id, {"games_lost": user.games_lost + 1})
-                del context.user_data['guess_game']
-                await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
+            game = BlackjackEngine.start(user_id, bet)
+            if game:
+                msg = f"🃏 ورق - رهان: {bet}\n\n"
+                msg += f"🎮 يدك: {BlackjackEngine.get_display(game.player_cards)}\n"
+                msg += f"   النقاط: {game.player_score}\n\n"
+                msg += f"🃏 الديلر: {BlackjackEngine.get_display(game.dealer_cards, True)}\n\n"
+                msg += f"اختر:\n"
+                msg += f"• hit - سحب ورقة\n"
+                msg += f"• stand - توقف"
+                
+                await update.message.reply_text(msg, reply_markup=blackjack_keyboard(game.id))
             else:
-                await update.message.reply_text(msg + "\n\nأرسل رقماً:", reply_markup=back_keyboard())
-        except ValueError:
-            await update.message.reply_text("أدخل رقماً صحيحاً!")
+                await update.message.reply_text("نقاطك غير كافية!")
+        except:
+            await update.message.reply_text("الصيغة: `ورق 20`")
         return
     
-    # Tournament
-    if text.startswith("بطولة "):
-        parts = text.replace("بطولة ", "").split()
-        if len(parts) >= 3:
-            name = parts[0]
-            game_type = parts[1]
-            max_players = int(parts[2])
+    # Hit/Stand commands
+    if text == "hit":
+        games = db.blackjack_games
+        active = [g for g in games if g["user_id"] == user_id and g["status"] == "playing"]
+        if active:
+            success, msg = BlackjackEngine.hit(active[-1]["id"], user_id)
+            if "خسرت" in msg or "فزت" in msg or "تعادل" in msg:
+                await update.message.reply_text(msg, reply_markup=play_again_keyboard())
+            else:
+                await update.message.reply_text(msg, reply_markup=blackjack_keyboard(active[-1]["id"]))
+        return
+    
+    if text == "stand":
+        games = db.blackjack_games
+        active = [g for g in games if g["user_id"] == user_id and g["status"] == "playing"]
+        if active:
+            success, msg = BlackjackEngine.stand(active[-1]["id"], user_id)
+            await update.message.reply_text(msg, reply_markup=play_again_keyboard())
+        return
+    
+    # Slot
+    if text == "سلوت" or text == "🎰":
+        won, msg, points = SlotEngine.spin(user_id)
+        await update.message.reply_text(msg, reply_markup=play_again_keyboard())
+        return
+    
+    # Dice
+    if text.startswith("نرد "):
+        try:
+            parts = text.replace("نرد ", "").split()
+            bet = int(parts[0])
+            prediction = parts[1] if len(parts) > 1 else "high"
             
-            tourney = TournamentEngine.create(name, game_type, max_players, config.TOURNAMENT_PRIZE)
-            await update.message.reply_text(
-                f"✅ تم إنشاء锦标赛!\n\n"
-                f"الاسم: {name}\n"
-                f"اللعبة: {game_type}\n\n"
-                f"انضم: `انضم {tourney.id}`"
-            )
-        return
-    
-    if text.startswith("انضم "):
-        tourney_id = text.replace("انضم ", "").strip()
-        success, msg = TournamentEngine.join(tourney_id, user_id)
-        await update.message.reply_text(msg)
+            if prediction in ["كبير", "high"]:
+                prediction = "high"
+            elif prediction in ["صغير", "low"]:
+                prediction = "low"
+            elif prediction in ["زوجي", "even"]:
+                prediction = "even"
+            elif prediction in ["فردي", "odd"]:
+                prediction = "odd"
+            
+            won, msg, points = DiceEngine.roll(user_id, prediction, bet)
+            await update.message.reply_text(msg, reply_markup=play_again_keyboard())
+        except:
+            await update.message.reply_text("الصيغة: `نرد 20 كبير`")
         return
     
     # Default
     await update.message.reply_text(
-        "🎮 العب من القائمة!",
+        "🃏 العب من القائمة!",
         reply_markup=main_menu_keyboard(user_id)
     )
 
 # ==================== MAIN ====================
 def main() -> None:
-    logger.info("🎮 Starting Ultimate Games Bot...")
+    logger.info("🃏 Starting Card Games Bot...")
     
     if not TELEGRAM_AVAILABLE:
         logger.error("Telegram not available!")
@@ -858,17 +758,19 @@ def main() -> None:
 /start - بدء
 /stats - إحصائيات
 
-PvP:
-xo [كود] - تحدي XO
-rps [اختيار] - حجر ورقة مقص
-عشوائي xo - ضد عشوائي
+🃏 ورق:
+ورق 20 - ابدأ بلعبة
+hit - سحب ورقة
+stand - توقف
 
-ألعاب:
-تخمين [رقم] - تخمين الرقم
+🎰 سلوت:
+سلوت - تدوير
 
-بطولات:
-بطولة [اسم] [لعبة] [عدد]
-انضم [كود]
+🎲 نرد:
+نرد 20 كبير - تخمين
+نرد 20 صغير
+نرد 20 زوجي
+نرد 20 فردي
 """))
     
     app.add_handler(CallbackQueryHandler(callback_handler))
