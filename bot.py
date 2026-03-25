@@ -1,13 +1,12 @@
 """
-🃏 Ultimate Card Games Bot - بلوت وورق
-ألعاب البلوت والورق والكازينو
+🎮 Smart Games Bot - ألعاب ذكية بدون قمار
+ألعاب ترفيهية وتعلمية
 
-🎯 الميزات:
-- بلوت (Balot)
-- ورق (Blackjack)
-- بوكر (Poker) - مبسط
-- سلوت (Slot)
-- النرد
+🎯 المبدأ:
+- اللعب للاستمتاع والتعلم
+- كل لعبة تكسب نقاط
+- المهارة هي المفتاح
+- لا رهانات ولا مخاطر
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ import string
 import time
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, field, asdict
 import logging
 
@@ -32,24 +31,32 @@ except ImportError:
 # ==================== CONFIG ====================
 class Config:
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "8593254152:AAFm59iuO45KmWqnlxb0ufDPRN8kDH6mjGc")
-    POINTS_PER_GAME: int = 20
-    WIN_BONUS: int = 30
-    BLACKJACK_BONUS: int = 50
-    SLOT_COST: int = 10
+    # نقاط - بدون قمار!
+    POINTS_PER_GAME: int = 15      # كل لعبة
+    WIN_BONUS: int = 20            # الفوز
+    STREAK_BONUS: int = 5          # السلسلة
+    DAILY_BONUS: int = 50          # المكافأة اليومية
+    PERFECT_BONUS: int = 30        # إجابة مثالية
+    SPEED_BONUS: int = 10          # سرعة
+    # حدود
+    MAX_LEVEL: int = 50
     DB_PATH: str = "./data"
 
 config = Config()
 
 logging.basicConfig(format='%(asctime)s | %(levelname)-8s | %(message)s', level=logging.INFO)
-logger = logging.getLogger("CardGamesBot")
+logger = logging.getLogger("SmartGamesBot")
 
 # ==================== ENUMS ====================
-class GameType(str, Enum):
-    BALOT = "balot"
-    BLACKJACK = "blackjack"
-    POKER = "poker"
-    SLOT = "slot"
-    DICE = "dice"
+class GameCategory(str, Enum):
+    PUZZLE = "puzzle"        # ألغاز
+    MEMORY = "memory"        # ذاكرة
+    QUIZ = "quiz"            # أسئلة
+    MATH = "math"            # رياضيات
+    LOGIC = "logic"          # منطق
+    CREATIVE = "creative"    # إبداع
+    SPORTS = "sports"        # رياضة
+    VOCAB = "vocab"          # مفردات
 
 # ==================== DATA CLASSES ====================
 @dataclass
@@ -57,60 +64,38 @@ class User:
     user_id: int
     username: str = ""
     first_name: str = ""
+    # النقاط والخبرة
     points: int = 0
     points_lifetime: int = 0
     level: int = 1
     experience: int = 0
-    # Stats
+    # الإحصائيات
     games_played: int = 0
     games_won: int = 0
     games_lost: int = 0
     current_streak: int = 0
     best_streak: int = 0
-    # Card games
-    balot_wins: int = 0
-    balot_losses: int = 0
-    blackjack_wins: int = 0
-    blackjack_losses: int = 0
-    poker_wins: int = 0
-    slots_played: int = 0
-    slots_won: int = 0
-    dice_played: int = 0
-    dice_won: int = 0
+    perfect_answers: int = 0
+    # حسب اللعبة
+    puzzles_solved: int = 0
+    memory_levels: int = 0
+    quiz_correct: int = 0
+    quiz_total: int = 0
+    math_solved: int = 0
+    logic_solved: int = 0
+    # وقت
+    total_time_played: int = 0
     join_date: str = field(default_factory=lambda: datetime.now().isoformat())
+    last_play: str = ""
 
 @dataclass
-class Card:
-    suit: str  # ♠️ ♥️ ♦️ ♣️
-    rank: str  # A,2-10,J,Q,K
-    value: int
-
-@dataclass
-class BlackjackGame:
+class Achievement:
     id: str
-    user_id: int
-    player_cards: List[Dict]
-    dealer_cards: List[Dict]
-    player_score: int
-    dealer_score: int
-    status: str  # playing, won, lost, push
-    bet: int
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-
-@dataclass
-class BalotGame:
-    id: str
-    player1_id: int
-    player2_id: int
-    player1_cards: List[Dict]
-    player2_cards: List[Dict]
-    player1_score: int
-    player2_score: int
-    current_turn: int
-    deck: List[Dict]
-    status: str
-    round: int
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    name: str
+    description: str
+    icon: str
+    requirement: int
+    category: str
 
 # ==================== DATABASE ====================
 class Database:
@@ -118,49 +103,30 @@ class Database:
         self.db_path = db_path
         os.makedirs(db_path, exist_ok=True)
         self.users_file = f"{db_path}/users.json"
-        self.blackjack_file = f"{db_path}/blackjack.json"
-        self.balot_file = f"{db_path}/balot.json"
-        self._init_files()
+        self._init_file()
     
-    def _init_files(self):
-        for f in [self.users_file, self.blackjack_file, self.balot_file]:
-            if not os.path.exists(f):
-                self._save_json(f, {} if "users" in f else [])
+    def _init_file(self):
+        if not os.path.exists(self.users_file):
+            self._save_json({})
     
-    def _load_json(self, path: str) -> Any:
+    def _load_json(self) -> Dict:
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(self.users_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except:
-            return {} if "users" in path else []
+            return {}
     
-    def _save_json(self, path: str, data: Any):
-        with open(path, 'w', encoding='utf-8') as f:
+    def _save_json(self, data: Dict):
+        with open(self.users_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     
     @property
     def users(self) -> Dict:
-        return self._load_json(self.users_file)
+        return self._load_json()
     
     @users.setter
     def users(self, data: Dict):
-        self._save_json(self.users_file, data)
-    
-    @property
-    def blackjack_games(self) -> List:
-        return self._load_json(self.blackjack_file)
-    
-    @blackjack_games.setter
-    def blackjack_games(self, data: List):
-        self._save_json(self.blackjack_file, data)
-    
-    @property
-    def balot_games(self) -> List:
-        return self._load_json(self.balot_file)
-    
-    @balot_games.setter
-    def balot_games(self, data: List):
-        self._save_json(self.balot_file, data)
+        self._save_json(data)
 
 db = Database()
 
@@ -184,284 +150,265 @@ def update_user(user_id: int, data: Dict):
         db.users = users
 
 def get_level_info(level: int) -> Tuple[str, int]:
-    levels = {1: ("مبتدئ", 0), 2: ("هاوٍ", 100), 3: ("ماهر", 300), 4: ("خبير", 600), 5: ("أستاذ", 1000), 6: ("محترف", 1800), 7: ("أسطورة", 3000)}
+    levels = {
+        1: ("مبتدئ", 0), 2: ("هاوٍ", 100), 3: ("ماهر", 300),
+        4: ("خبير", 600), 5: ("أستاذ", 1000), 6: ("محترف", 1800),
+        7: ("أسطورة", 3000), 8: ("عبقري", 5000), 9: ("خرافي", 8000),
+        10: ("الكمال", 12000)
+    }
     return levels.get(level, ("غير معروف", 0))
 
 def calculate_level(exp: int) -> int:
-    thresholds = [0, 100, 300, 600, 1000, 1800, 3000]
+    thresholds = [0, 100, 300, 600, 1000, 1800, 3000, 5000, 8000, 12000]
     for i, t in enumerate(thresholds):
         if exp < t:
             return i + 1
     return len(thresholds) + 1
 
-# ==================== CARD DECK ====================
-class Deck:
-    """مجموعة أوراق"""
+# ==================== GAMES CONTENT ====================
+class GameContent:
+    """محتوى الألعاب - أسئلة وألغاز"""
     
-    SUITS = ["♠️", "♥️", "♦️", "♣️"]
-    RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    # ألغاز منطقية
+    LOGIC_PUZZLES = [
+        {"q": "ما الرقم التالي: 2، 6، 12، 20، 30، ...", "a": "42", "hint": "الفروق: 4، 6، 8، 10، 12"},
+        {"q": "ما الرقم الخطأ: 2، 3، 5، 8، 12، 17", "a": "12", "hint": "كل رقم = مجموع السابقتين + 1"},
+        {"q": "أكمل: أ، ج، هـ، ...", "a": "و", "hint": "الحروف المتحركة"},
+        {"q": "إذا A=1، B=2، ما قيمة CAB؟", "a": "312", "hint": "C=3, A=1, B=2"},
+        {"q": "ما هو اليوم بعد 'بعد tomorrow'؟", "a": "اليوم", "hint": "فكر في المعنى الحرفي"},
+        {"q": "5 + 5 + 5 = 550 أضف خطاً واحداً لتصبح صحيحة", "a": "545+5", "hint": "حول علامة + إلى 4"},
+        {"q": "لديك 3 صناديق. واحد فيه كل التفاحات، واحد فيه كل البرتقال، واحد فيه كلاهما. جميع الصناديق مُسماة خطأ. كيف تعرف كل صندوق بفتح صندوق واحد فقط؟", "a": "افتح صندوق البرتقال والتفاح", "hint": "الصندوق المسمى كلاهما"},
+    ]
     
-    @staticmethod
-    def create_shuffled() -> List[Dict]:
-        deck = []
-        for suit in Deck.SUITS:
-            for rank in Deck.RANKS:
-                value = 11 if rank == "A" else 10 if rank in ["J", "Q", "K"] else int(rank)
-                deck.append({"suit": suit, "rank": rank, "value": value})
-        random.shuffle(deck)
-        return deck
+    # أسئلة عامة
+    QUIZ_QUESTIONS = [
+        {"q": "ما عاصمة فرنسا؟", "a": "باريس", "c": "جغرافيا"},
+        {"q": "من مكتشف أمريكا؟", "a": "كولومبوس", "c": "تاريخ"},
+        {"q": "ما أكبر كوكب في النظام الشمسي؟", "a": "المشتري", "c": "علم"},
+        {"q": "كم قارة في العالم؟", "a": "7", "c": "جغرافيا"},
+        {"q": "ما أطول نهر في العالم؟", "a": "النيل", "c": "جغرافيا"},
+        {"q": "ما لون الدم في الأوردة؟", "a": "أزرق", "c": "علم"},
+        {"q": "من أبو الفيزياء الحديثة؟", "a": "أينشتاين", "c": "علم"},
+        {"q": "ما عنصر الأكسجين؟", "a": "O", "c": "كيمياء"},
+        {"q": "ما 12 × 12؟", "a": "144", "c": "رياضيات"},
+        {"q": "ما الجذر التربيعي لـ 64؟", "a": "8", "c": "رياضيات"},
+        {"q": "ما جمع كتاب؟", "a": "كتب", "c": "لغة"},
+        {"q": "ما عكس كبير؟", "a": "صغير", "c": "لغة"},
+        {"q": "ما اسم الفاعل من كتب؟", "a": "كاتب", "c": "لغة"},
+        {"q": "من هو مؤسس فيسبوك؟", "a": "مارك", "c": "تكنولوجيا"},
+        {"q": "ما أقرب كوكب للشمس؟", "a": "عطارد", "c": "علم"},
+    ]
     
-    @staticmethod
-    def draw(deck: List[Dict], count: int = 1) -> Tuple[List[Dict], List[Dict]]:
-        cards = deck[:count]
-        remaining = deck[count:]
-        return cards, remaining
+    # مسائل رياضية
+    MATH_PROBLEMS = [
+        {"q": "5 + 8 × 2", "a": "21"},
+        {"q": "(10 + 5) × 3", "a": "45"},
+        {"q": "100 ÷ 4 + 7", "a": "32"},
+        {"q": "15 × 15 - 25", "a": "200"},
+        {"q": "(50 - 20) ÷ 5 + 10", "a": "16"},
+        {"q": "8² + 6²", "a": "100"},
+        {"q": "3³ + 4³", "a": "91"},
+        {"q": "√144 + √169", "a": "25"},
+        {"q": "25% من 200", "a": "50"},
+        {"q": "10 + 10 × 10", "a": "110"},
+    ]
+    
+    # مفردات إنجليزية
+    VOCAB_WORDS = [
+        {"q": "ما معنى 'Hello'؟", "a": "مرحبا", "c": "أساسي"},
+        {"q": "ما معنى 'Thank you'؟", "a": "شكرا", "c": "أساسي"},
+        {"q": "ما معنى 'Computer'؟", "a": "حاسوب", "c": "تكنولوجيا"},
+        {"q": "ما معنى 'Internet'؟", "a": "إنترنت", "c": "تكنولوجيا"},
+        {"q": "ما معنى 'Beautiful'؟", "a": "جميل", "c": "صفة"},
+        {"q": "ما معنى 'Happy'؟", "a": "سعيد", "c": "صفة"},
+    ]
+    
+    @classmethod
+    def get_logic(cls) -> Dict:
+        return random.choice(cls.LOGIC_PUZZLES)
+    
+    @classmethod
+    def get_quiz(cls) -> Dict:
+        return random.choice(cls.QUIZ_QUESTIONS)
+    
+    @classmethod
+    def get_math(cls) -> Dict:
+        return random.choice(cls.MATH_PROBLEMS)
+    
+    @classmethod
+    def get_vocab(cls) -> Dict:
+        return random.choice(cls.VOCAB_WORDS)
 
-# ==================== BLACKJACK ====================
-class BlackjackEngine:
-    """محرك لعبة ورق (Blackjack)"""
-    
-    @staticmethod
-    def start(user_id: int, bet: int) -> BlackjackGame:
-        user = get_user(user_id)
-        if user.points < bet:
-            return None
-        
-        # خصم الرهان
-        update_user(user_id, {"points": user.points - bet})
-        
-        deck = Deck.create_shuffled()
-        player_cards, deck = Deck.draw(deck, 2)
-        dealer_cards, deck = Deck.draw(deck, 2)
-        
-        player_score = BlackjackEngine.calculate_score(player_cards)
-        dealer_score = BlackjackEngine.calculate_score(dealer_cards)
-        
-        game = BlackjackGame(
-            id=generate_id("BJ"),
-            user_id=user_id,
-            player_cards=player_cards,
-            dealer_cards=dealer_cards,
-            player_score=player_score,
-            dealer_score=dealer_score,
-            status="playing",
-            bet=bet
-        )
-        
-        games = db.blackjack_games
-        games.append(asdict(game))
-        db.blackjack_games = games
-        
-        return game
-    
-    @staticmethod
-    def calculate_score(cards: List[Dict]) -> int:
-        score = sum(c["value"] for c in cards)
-        aces = sum(1 for c in cards if c["rank"] == "A")
-        
-        while score > 21 and aces > 0:
-            score -= 10
-            aces -= 1
-        
-        return score
-    
-    @staticmethod
-    def get_display(cards: List[Dict], hide_first: bool = False) -> str:
-        if hide_first and len(cards) > 0:
-            return "🃏 " + " ".join([f"{c['suit']}{c['rank']}" for c in cards[1:]])
-        return " ".join([f"{c['suit']}{c['rank']}" for c in cards])
-    
-    @staticmethod
-    def hit(game_id: str, user_id: int) -> Tuple[bool, str]:
-        games = db.blackjack_games
-        
-        for i, g in enumerate(games):
-            if g["id"] == game_id and g["user_id"] == user_id and g["status"] == "playing":
-                game = BlackjackGame(**g)
-                
-                # إضافة ورقة
-                deck = Deck.create_shuffled()
-                new_card, _ = Deck.draw(deck, 1)
-                game.player_cards.extend(new_card)
-                game.player_score = BlackjackEngine.calculate_score(game.player_cards)
-                
-                if game.player_score > 21:
-                    # خسر
-                    game.status = "lost"
-                    update_user(user_id, {"games_lost": get_user(user_id).games_lost + 1})
-                    msg = f"❌ خسرت!\n\n"
-                    msg += f"🎮 يدك: {BlackjackEngine.get_display(game.player_cards)}\n"
-                    msg += f"   النقاط: {game.player_score}\n\n"
-                    msg += f"🃏 الديلر: {BlackjackEngine.get_display(game.dealer_cards, True)}\n"
-                    msg += f"   النقاط: {game.dealer_score}\n\n"
-                    msg += f"تجاوزت 21! +{config.POINTS_PER_GAME} نقطة"
-                else:
-                    msg = f"🎮 يدك: {BlackjackEngine.get_display(game.player_cards)}\n"
-                    msg += f"   النقاط: {game.player_score}\n\n"
-                    msg += f"اختر:\n"
-                    msg += f"• hit - سحب ورقة أخرى\n"
-                    msg += f"• stand - توقف"
-                
-                games[i] = asdict(game)
-                db.blackjack_games = games
-                return True, msg
-        
-        return False, "اللعبة غير موجودة!"
-    
-    @staticmethod
-    def stand(game_id: str, user_id: int) -> Tuple[bool, str]:
-        games = db.blackjack_games
-        
-        for i, g in enumerate(games):
-            if g["id"] == game_id and g["user_id"] == user_id and g["status"] == "playing":
-                game = BlackjackGame(**g)
-                
-                # الديلر يسحب
-                deck = Deck.create_shuffled()
-                while game.dealer_score < 17:
-                    new_card, _ = Deck.draw(deck, 1)
-                    game.dealer_cards.extend(new_card)
-                    game.dealer_score = BlackjackEngine.calculate_score(game.dealer_cards)
-                
-                # تحديد الفائز
-                if game.dealer_score > 21 or game.player_score > game.dealer_score:
-                    game.status = "won"
-                    points = game.bet * 2 + config.BLACKJACK_BONUS
-                    user = get_user(user_id)
-                    update_user(user_id, {
-                        "points": user.points + points,
-                        "games_won": user.games_won + 1,
-                        "blackjack_wins": user.blackjack_wins + 1
-                    })
-                    msg = f"🎉 فزت!\n\n"
-                    msg += f"🎮 يدك: {BlackjackEngine.get_display(game.player_cards)} = {game.player_score}\n\n"
-                    msg += f"🃏 الديلر: {BlackjackEngine.get_display(game.dealer_cards)} = {game.dealer_score}\n\n"
-                    msg += f"+{points} نقطة!"
-                
-                elif game.player_score == game.dealer_score:
-                    game.status = "push"
-                    points = game.bet
-                    user = get_user(user_id)
-                    update_user(user_id, {"points": user.points + points})
-                    msg = f"🤝 تعادل!\n\n"
-                    msg += f"🎮 يدك: {game.player_score}\n"
-                    msg += f"🃏 الديلر: {game.dealer_score}\n\n"
-                    msg += f"استرداد رهانك: {points}"
-                
-                else:
-                    game.status = "lost"
-                    update_user(user_id, {"games_lost": get_user(user_id).games_lost + 1})
-                    msg = f"❌ خسرت!\n\n"
-                    msg += f"🎮 يدك: {game.player_score}\n"
-                    msg += f"🃏 الديلر: {game.dealer_score}\n\n"
-                    msg += f"+{config.POINTS_PER_GAME} نقطة"
-                
-                games[i] = asdict(game)
-                db.blackjack_games = games
-                return True, msg
-        
-        return False, "اللعبة غير موجودة!"
+# ==================== ACHIEVEMENTS ====================
+ACHIEVEMENTS = [
+    Achievement("first_game", "البداية", "العب أول لعبة", "🎮", 1, "general"),
+    Achievement("puzzle_10", "محقق", "حل 10 ألغاز", "🧩", 10, "puzzle"),
+    Achievement("puzzle_50", "عالم الألغاز", "حل 50 لغز", "🧩", 50, "puzzle"),
+    Achievement("quiz_20", "مثقف", "20 إجابة صحيحة", "📚", 20, "quiz"),
+    Achievement("quiz_100", "عالم", "100 إجابة صحيحة", "📚", 100, "quiz"),
+    Achievement("math_10", "حاسب", "حل 10 مسائل", "🔢", 10, "math"),
+    Achievement("math_50", "رياضي", "50 مسألة", "🔢", 50, "math"),
+    Achievement("streak_5", "مثابر", "5 انتصارات متتالية", "🔥", 5, "streak"),
+    Achievement("streak_10", "متميز", "10 انتصارات", "🔥", 10, "streak"),
+    Achievement("streak_25", "أسطورة", "25 انتصار", "👑", 25, "streak"),
+    Achievement("games_50", "لاعب نشط", "50 لعبة", "🏃", 50, "general"),
+    Achievement("games_200", "محترف", "200 لعبة", "⭐", 200, "general"),
+    Achievement("perfect_5", "دقيق", "5 إجابات مثالية", "💯", 5, "special"),
+    Achievement("level_5", "صاعد", "المستوى 5", "⬆️", 5, "level"),
+    Achievement("level_10", "متقدم", "المستوى 10", "⬆️", 10, "level"),
+]
 
-# ==================== SLOT MACHINE ====================
-class SlotEngine:
-    """محرك السلوت"""
-    
-    SYMBOLS = ["🍒", "🍋", "🍇", "💎", "🔔", "7️⃣"]
-    PAYOUTS = {
-        ("7️⃣", "7️⃣", "7️⃣"): 100,
-        ("💎", "💎", "💎"): 50,
-        ("🔔", "🔔", "🔔"): 25,
-        ("🍇", "🍇", "🍇"): 15,
-        ("🍒", "🍒", "🍒"): 10,
-        ("🍋", "🍋", "🍋"): 5,
-    }
+# ==================== GAME ENGINE ====================
+class GameEngine:
+    """محرك الألعاب"""
     
     @staticmethod
-    def spin(user_id: int) -> Tuple[bool, str, int]:
+    def play_logic(user_id: int, answer: str) -> Tuple[bool, str, int]:
+        """لعبة منطقية"""
+        puzzle = GameContent.get_logic()
+        correct = answer.strip().lower() == puzzle["a"].strip().lower()
+        
+        points = config.POINTS_PER_GAME
         user = get_user(user_id)
-        cost = config.SLOT_COST
         
-        if user.points < cost:
-            return False, "نقاطك غير كافية! تحتاج 10 نقاط", 0
-        
-        update_user(user_id, {"points": user.points - cost, "slots_played": user.slots_played + 1})
-        
-        # تدوير
-        result = [random.choice(SlotEngine.SYMBOLS) for _ in range(3)]
-        
-        # فحص الفوز
-        win = False
-        multiplier = 0
-        
-        for pattern, mult in SlotEngine.PAYOUTS.items():
-            if result[0] == pattern[0] and result[1] == pattern[1] and result[2] == pattern[2]:
-                win = True
-                multiplier = mult
-                break
-        
-        # حتى رمزين متطابقين
-        if not win:
-            if result[0] == result[1] or result[1] == result[2] or result[0] == result[2]:
-                win = True
-                multiplier = 2
-        
-        if win:
-            points = cost * multiplier
-            update_user(user_id, {
-                "points": get_user(user_id).points + points,
-                "slots_won": get_user(user_id).slots_won + 1
-            })
-            msg = f"🎰 {result[0]} {result[1]} {result[2]}\n\n"
-            msg += f"🎉 مبروك! +{points} نقطة!"
-            return True, msg, points
+        if correct:
+            points += config.WIN_BONUS
+            msg = f"✅ إجابة صحيحة!\n\n💡 {puzzle['a']}\n\n+{points} نقطة!"
         else:
-            msg = f"🎰 {result[0]} {result[1]} {result[2]}\n\n"
-            msg += f"❌ لم تربح! +{config.POINTS_PER_GAME} نقطة"
-            return True, msg, config.POINTS_PER_GAME
-
-# ==================== DICE ====================
-class DiceEngine:
-    """محرك النرد"""
+            msg = f"❌ الإجابة الصحيحة: {puzzle['a']}\n\n💡 تلميح: {puzzle['hint']}\n\n+{points} نقطة"
+        
+        # تحديث
+        new_streak = user.current_streak + 1 if correct else 0
+        total = points + (new_streak * config.STREAK_BONUS if correct else 0)
+        
+        update_user(user_id, {
+            "points": user.points + total,
+            "points_lifetime": user.points_lifetime + total,
+            "games_played": user.games_played + 1,
+            "games_won": user.games_won + 1 if correct else user.games_won,
+            "games_lost": user.games_lost + 1 if not correct else user.games_lost,
+            "current_streak": new_streak,
+            "best_streak": max(user.best_streak, new_streak),
+            "puzzles_solved": user.puzzles_solved + 1 if correct else user.puzzles_solved,
+            "experience": user.experience + total,
+            "level": calculate_level(user.experience + total)
+        })
+        
+        return correct, msg, total
     
     @staticmethod
-    def roll(user_id: int, prediction: str, bet: int) -> Tuple[bool, str, int]:
+    def play_quiz(user_id: int, answer: str) -> Tuple[bool, str, int]:
+        """لعبة سؤال"""
+        quiz = GameContent.get_quiz()
+        correct = answer.strip().lower() == quiz["a"].strip().lower()
+        
+        points = config.POINTS_PER_GAME
         user = get_user(user_id)
         
-        if user.points < bet:
-            return False, "نقاطك غير كافية!", 0
-        
-        update_user(user_id, {"points": user.points - bet, "dice_played": user.dice_played + 1})
-        
-        dice1 = random.randint(1, 6)
-        dice2 = random.randint(1, 6)
-        total = dice1 + dice2
-        
-        won = False
-        
-        if prediction == "high" and total >= 7:
-            won = True
-        elif prediction == "low" and total <= 6:
-            won = True
-        elif prediction.isdigit() and int(prediction) == total:
-            won = True
-        elif prediction == "even" and total % 2 == 0:
-            won = True
-        elif prediction == "odd" and total % 2 == 1:
-            won = True
-        
-        if won:
-            points = bet * 2
-            update_user(user_id, {
-                "points": get_user(user_id).points + points,
-                "dice_won": get_user(user_id).dice_won + 1
-            })
-            msg = f"🎲 النرد: {dice1} + {dice2} = {total}\n\n"
-            msg += f"🎉 فزت! +{points} نقطة!"
-            return True, msg, points
+        if correct:
+            points += config.WIN_BONUS
+            msg = f"✅ صحيح! ({quiz['c']})\n\n+{points} نقطة!"
         else:
-            msg = f"🎲 النرد: {dice1} + {dice2} = {total}\n\n"
-            msg += f"❌ خسرت! +{config.POINTS_PER_GAME} نقطة"
-            return True, msg, config.POINTS_PER_GAME
+            msg = f"❌ الإجابة: {quiz['a']}\n\n+{points} نقطة"
+        
+        new_streak = user.current_streak + 1 if correct else 0
+        total = points + (new_streak * config.STREAK_BONUS if correct else 0)
+        
+        update_user(user_id, {
+            "points": user.points + total,
+            "points_lifetime": user.points_lifetime + total,
+            "games_played": user.games_played + 1,
+            "games_won": user.games_won + 1 if correct else user.games_won,
+            "games_lost": user.games_lost + 1 if not correct else user.games_lost,
+            "current_streak": new_streak,
+            "best_streak": max(user.best_streak, new_streak),
+            "quiz_correct": user.quiz_correct + 1 if correct else user.quiz_correct,
+            "quiz_total": user.quiz_total + 1,
+            "experience": user.experience + total,
+            "level": calculate_level(user.experience + total)
+        })
+        
+        return correct, msg, total
+    
+    @staticmethod
+    def play_math(user_id: int, answer: str) -> Tuple[bool, str, int]:
+        """لعبة رياضيات"""
+        problem = GameContent.get_math()
+        correct = answer.strip() == problem["a"].strip()
+        
+        points = config.POINTS_PER_GAME + 5
+        user = get_user(user_id)
+        
+        if correct:
+            points += config.WIN_BONUS
+            msg = f"✅ إجابة صحيحة!\n\n🔢 {problem['a']}\n\n+{points} نقطة!"
+        else:
+            msg = f"❌ الإجابة: {problem['a']}\n\n+{points} نقطة"
+        
+        new_streak = user.current_streak + 1 if correct else 0
+        total = points + (new_streak * config.STREAK_BONUS if correct else 0)
+        
+        update_user(user_id, {
+            "points": user.points + total,
+            "points_lifetime": user.points_lifetime + total,
+            "games_played": user.games_played + 1,
+            "games_won": user.games_won + 1 if correct else user.games_won,
+            "games_lost": user.games_lost + 1 if not correct else user.games_lost,
+            "current_streak": new_streak,
+            "best_streak": max(user.best_streak, new_streak),
+            "math_solved": user.math_solved + 1 if correct else user.math_solved,
+            "experience": user.experience + total,
+            "level": calculate_level(user.experience + total)
+        })
+        
+        return correct, msg, total
+    
+    @staticmethod
+    def play_vocab(user_id: int, answer: str) -> Tuple[bool, str, int]:
+        """لعبة مفردات إنجليزية"""
+        word = GameContent.get_vocab()
+        correct = answer.strip().lower() == word["a"].strip().lower()
+        
+        points = config.POINTS_PER_GAME
+        user = get_user(user_id)
+        
+        if correct:
+            points += config.WIN_BONUS
+            msg = f"✅ صحيح! ({word['c']})\n\n+{points} نقطة!"
+        else:
+            msg = f"❌ الإجابة: {word['a']}\n\n+{points} نقطة"
+        
+        new_streak = user.current_streak + 1 if correct else 0
+        total = points + (new_streak * config.STREAK_BONUS if correct else 0)
+        
+        update_user(user_id, {
+            "points": user.points + total,
+            "points_lifetime": user.points_lifetime + total,
+            "games_played": user.games_played + 1,
+            "games_won": user.games_won + 1 if correct else user.games_won,
+            "current_streak": new_streak,
+            "experience": user.experience + total,
+            "level": calculate_level(user.experience + total)
+        })
+        
+        return correct, msg, total
+    
+    @staticmethod
+    def get_daily_bonus(user_id: int) -> Tuple[bool, str]:
+        """مكافأة يومية"""
+        user = get_user(user_id)
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        if user.last_play == today:
+            return False, "المكافأة اليومية مُطالَبة بالفعل!"
+        
+        bonus = config.DAILY_BONUS
+        update_user(user_id, {
+            "points": user.points + bonus,
+            "last_play": today
+        })
+        
+        return True, f"🎁 مكافأة يومية: +{bonus} نقطة!"
 
 # ==================== KEYBOARDS ====================
 def main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -470,23 +417,10 @@ def main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     
     keyboard = [
         [InlineKeyboardButton(f"🎮 المستوى {user.level} ({level_name}) | ⭐ {user.points}", callback_data="stats")],
-        [InlineKeyboardButton("🃏 ورق (Blackjack)", callback_data="game_blackjack"), InlineKeyboardButton("🎰 سلوت", callback_data="game_slot")],
-        [InlineKeyboardButton("🎲 نرد", callback_data="game_dice"), InlineKeyboardButton("🃏 بلوت", callback_data="game_balot")],
-        [InlineKeyboardButton("📊 إحصائيات", callback_data="stats"), InlineKeyboardButton("🏆 إنجازات", callback_data="achievements")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def blackjack_keyboard(game_id: str) -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton("🃏 hit - سحب", callback_data=f"bj_hit_{game_id}")],
-        [InlineKeyboardButton("✋ stand - توقف", callback_data=f"bj_stand_{game_id}")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def dice_keyboard() -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton("⬆️ كبير (7-12)", callback_data="dice_high"), InlineKeyboardButton("⬇️ صغير (2-6)", callback_data="dice_low")],
-        [InlineKeyboardButton("👫 زوجي", callback_data="dice_even"), InlineKeyboardButton("🔢 فردي", callback_data="dice_odd")],
+        [InlineKeyboardButton("🧩 لغز", callback_data="game_logic"), InlineKeyboardButton("❓ سؤال", callback_data="game_quiz")],
+        [InlineKeyboardButton("🔢 رياضيات", callback_data="game_math"), InlineKeyboardButton("📝 مفردات", callback_data="game_vocab")],
+        [InlineKeyboardButton("🎁 مكافأة", callback_data="daily_bonus"), InlineKeyboardButton("🏆 إنجازات", callback_data="achievements")],
+        [InlineKeyboardButton("📊 إحصائيات", callback_data="stats")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -494,7 +428,7 @@ def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="back")]])
 
 def play_again_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 لعب مرة أخرى", callback_data="play_again")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 لعبة أخرى", callback_data="play_again")]])
 
 # ==================== BOT HANDLERS ====================
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -504,65 +438,93 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_data = get_user(user_id)
     level_name, _ = get_level_info(user_data.level)
     
-    welcome = f"""🃏 مرحباً {user.first_name}!
+    welcome = f"""🎮 مرحباً {user.first_name}!
 
-🎰 ألعاب الكازينو:
+✨ ألعاب ذكية بدون قمار:
 
-🃏 ورق (Blackjack)
-• اقترب من 21 دون تجاوز
-• الرهان: 10-100 نقطة
+🧩 ألغاز منطقية
+❓ أسئلة عامة
+🔢 مسائل رياضية
+📝 مفردات إنجليزية
 
-🎰 سلوت
-• 3 رموز متطابقة للفوز
-• التكلفة: 10 نقاط
-
-🎲 النرد
-• تخمن مجموع النردين
-• رهان: 10-50 نقطة
-
-🃏 بلوت
-• ضد البوت
-• نظام مبسط
-
-💰 النقاط:
-• كل لعبة: {config.POINTS_PER_GAME}
-• الفوز: +{config.WIN_BONUS}
+💰 نظام النقاط:
+• كل لعبة: +{config.POINTS_PER_GAME} نقطة
+• الفوز: +{config.WIN_BONUS} نقطة
+• السلسلة: +{config.STREAK_BONUS} لكل مستوى
+• مكافأة يومية: +{config.DAILY_BONUS} نقطة
 
 🎯 مستواك: {user_data.level} ({level_name})
 ⭐ نقاطك: {user_data.points}
+🔥 السلسلة: {user_data.current_streak}
+
+💡 العب وتعلم واستمتع!
 """
     await update.message.reply_text(welcome, reply_markup=main_menu_keyboard(user_id))
-    logger.info(f"User {user_id} started card games bot")
+    logger.info(f"User {user_id} started")
 
 async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.message.from_user.id
     user = get_user(user_id)
     level_name, _ = get_level_info(user.level)
+    next_level_xp = get_level_info(user.level + 1)[1]
+    current_level_xp = get_level_info(user.level)[1]
+    progress = ((user.experience - current_level_xp) / (next_level_xp - current_level_xp) * 100) if next_level_xp > current_level_xp else 100
+    
+    win_rate = (user.games_won / user.games_played * 100) if user.games_played > 0 else 0
     
     text = f"""📊 إحصائياتك
 ━━━━━━━━━━━━━━━━
 🏆 المستوى: {user.level} ({level_name})
 ⭐ النقاط: {user.points}
+📈 الخبرة: {user.experience}
 
-🃏 ورق:
-• انتصارات: {user.blackjack_wins}
-• هزائم: {user.blackjack_losses}
+📏 التقدم: [{('█' * int(progress/10)) + ('░' * (10-int(progress/10)))}] {progress:.0f}%
 
-🎰 سلوت:
-• لعبت: {user.slots_played}
-• فزت: {user.slots_won}
+🎮 الألعاب:
+• لعبت: {user.games_played}
+• فزت: {user.games_won}
+• خسرت: {user.games_lost}
+• نسبة الفوز: {win_rate:.1f}%
 
-🎲 النرد:
-• لعبت: {user.dice_played}
-• فزت: {user.dice_won}
-
-🃏 بلوت:
-• انتصارات: {user.balot_wins}
-• هزائم: {user.balot_losses}
+🧩 الألغاز: {user.puzzles_solved}
+❓ الأسئلة: {user.quiz_correct}/{user.quiz_total}
+🔢 الرياضيات: {user.math_solved}
 
 🔥 السلسلة: {user.current_streak}
 🏆 الأفضل: {user.best_streak}
 ━━━━━━━━━━━━━━━━"""
+    await update.message.reply_text(text, reply_markup=main_menu_keyboard(user_id))
+
+async def achievements_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.id
+    user = get_user(user_id)
+    
+    text = "🏆 الإنجازات\n━━━━━━━━━━━━━━━━\n"
+    
+    for ach in ACHIEVEMENTS:
+        earned = False
+        
+        if ach.category == "general" and ach.id == "first_game":
+            earned = user.games_played >= ach.requirement
+        elif ach.category == "puzzle":
+            earned = user.puzzles_solved >= ach.requirement
+        elif ach.category == "quiz":
+            earned = user.quiz_correct >= ach.requirement
+        elif ach.category == "math":
+            earned = user.math_solved >= ach.requirement
+        elif ach.category == "streak":
+            earned = user.best_streak >= ach.requirement
+        elif ach.category == "level":
+            earned = user.level >= ach.requirement
+        elif ach.category == "general" and ach.id == "games_50":
+            earned = user.games_played >= 50
+        elif ach.category == "general" and ach.id == "games_200":
+            earned = user.games_played >= 200
+        
+        status = "✅" if earned else "⬜"
+        text += f"{status} {ach.icon} {ach.name}\n"
+        text += f"   📝 {ach.description}\n\n"
+    
     await update.message.reply_text(text, reply_markup=main_menu_keyboard(user_id))
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -571,85 +533,58 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     user_id = query.from_user.id
     data = query.data
-    user = get_user(user_id)
     
-    # Navigation
-    if data == "back":
+    if data == "back" or data == "play_again":
         await stats_handler(update, context)
         return
     elif data == "stats":
         await stats_handler(update, context)
         return
-    elif data == "play_again":
-        await stats_handler(update, context)
+    elif data == "achievements":
+        await achievements_handler(update, context)
+        return
+    elif data == "daily_bonus":
+        success, msg = GameEngine.get_daily_bonus(user_id)
+        await query.edit_message_text(msg, reply_markup=main_menu_keyboard(user_id))
         return
     
-    # Blackjack
-    elif data == "game_blackjack":
+    # Games
+    elif data == "game_logic":
+        puzzle = GameContent.get_logic()
+        context.user_data['current_game'] = 'logic'
         await query.edit_message_text(
-            "🃏 ورق (Blackjack)\n\n"
-            "هدف اللعبة: اقترب من 21 دون تجاوز!\n\n"
-            "أرسل رهانك:\n"
-            "`ورق 20`\n\n"
-            "(10-100 نقطة)",
+            f"🧩 لغز منطقي\n\n{puzzle['q']}\n\n"
+            f"📝 أرسل إجابتك:",
             reply_markup=back_keyboard()
         )
         return
     
-    elif data.startswith("bj_"):
-        parts = data.split("_")
-        action = parts[1]
-        game_id = parts[2] if len(parts) > 2 else None
-        
-        if action == "hit" and game_id:
-            success, msg = BlackjackEngine.hit(game_id, user_id)
-            if "خسرت" in msg or "فزت" in msg or "تعادل" in msg:
-                await query.edit_message_text(msg, reply_markup=play_again_keyboard())
-            else:
-                await query.edit_message_text(msg, reply_markup=blackjack_keyboard(game_id))
-        elif action == "stand" and game_id:
-            success, msg = BlackjackEngine.stand(game_id, user_id)
-            await query.edit_message_text(msg, reply_markup=play_again_keyboard())
-        return
-    
-    # Slot
-    elif data == "game_slot":
-        won, msg, points = SlotEngine.spin(user_id)
-        await query.edit_message_text(msg, reply_markup=play_again_keyboard())
-        return
-    
-    # Dice
-    elif data == "game_dice":
+    elif data == "game_quiz":
+        quiz = GameContent.get_quiz()
+        context.user_data['current_game'] = 'quiz'
         await query.edit_message_text(
-            "🎲 النرد\n\n"
-            "اختر تخمينك:\n\n"
-            "⬆️ كبير: مجموع 7-12\n"
-            "⬇️ صغير: مجموع 2-6\n"
-            "👫 زوجي: مجموع زوجي\n"
-            "🔢 فردي: مجموع فردي\n\n"
-            "أرسل: `نرد 20 كبير`",
-            reply_markup=dice_keyboard()
+            f"❓ سؤال\n\n{quiz['q']}\n\n"
+            f"📝 أرسل إجابتك:",
+            reply_markup=back_keyboard()
         )
         return
     
-    elif data.startswith("dice_"):
-        prediction = data.replace("dice_", "")
-        if prediction == "high":
-            prediction = "high"
-        elif prediction == "low":
-            prediction = "low"
-        
-        won, msg, points = DiceEngine.roll(user_id, prediction, 20)
-        await query.edit_message_text(msg, reply_markup=play_again_keyboard())
+    elif data == "game_math":
+        problem = GameContent.get_math()
+        context.user_data['current_game'] = 'math'
+        await query.edit_message_text(
+            f"🔢 مسألة رياضية\n\n{problem['q']}\n\n"
+            f"📝 أرسل الإجابة:",
+            reply_markup=back_keyboard()
+        )
         return
     
-    # Balot
-    elif data == "game_balot":
+    elif data == "game_vocab":
+        word = GameContent.get_vocab()
+        context.user_data['current_game'] = 'vocab'
         await query.edit_message_text(
-            "🃏 بلوت\n\n"
-            "قريباً...\n\n"
-            "هذه اللعبة تحتاج لاعبين حقيقيين!\n\n"
-            "أنشئ غرفة: `بلوت`",
+            f"📝 مفردات إنجليزية\n\n{word['q']}\n\n"
+            f"📝 أرسل الترجمة:",
             reply_markup=back_keyboard()
         )
         return
@@ -657,94 +592,81 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text.strip()
     user_id = update.message.from_user.id
-    user = get_user(user_id)
     
-    # Blackjack
-    if text.startswith("ورق "):
-        try:
-            bet = int(text.replace("ورق ", ""))
-            if bet < 10 or bet > 100:
-                await update.message.reply_text("الرهان يجب أن يكون 10-100!")
-                return
-            
-            if user.points < bet:
-                await update.message.reply_text("نقاطك غير كافية!")
-                return
-            
-            game = BlackjackEngine.start(user_id, bet)
-            if game:
-                msg = f"🃏 ورق - رهان: {bet}\n\n"
-                msg += f"🎮 يدك: {BlackjackEngine.get_display(game.player_cards)}\n"
-                msg += f"   النقاط: {game.player_score}\n\n"
-                msg += f"🃏 الديلر: {BlackjackEngine.get_display(game.dealer_cards, True)}\n\n"
-                msg += f"اختر:\n"
-                msg += f"• hit - سحب ورقة\n"
-                msg += f"• stand - توقف"
-                
-                await update.message.reply_text(msg, reply_markup=blackjack_keyboard(game.id))
-            else:
-                await update.message.reply_text("نقاطك غير كافية!")
-        except:
-            await update.message.reply_text("الصيغة: `ورق 20`")
-        return
+    # Get current game from context
+    current_game = context.user_data.get('current_game', '')
     
-    # Hit/Stand commands
-    if text == "hit":
-        games = db.blackjack_games
-        active = [g for g in games if g["user_id"] == user_id and g["status"] == "playing"]
-        if active:
-            success, msg = BlackjackEngine.hit(active[-1]["id"], user_id)
-            if "خسرت" in msg or "فزت" in msg or "تعادل" in msg:
-                await update.message.reply_text(msg, reply_markup=play_again_keyboard())
-            else:
-                await update.message.reply_text(msg, reply_markup=blackjack_keyboard(active[-1]["id"]))
-        return
-    
-    if text == "stand":
-        games = db.blackjack_games
-        active = [g for g in games if g["user_id"] == user_id and g["status"] == "playing"]
-        if active:
-            success, msg = BlackjackEngine.stand(active[-1]["id"], user_id)
-            await update.message.reply_text(msg, reply_markup=play_again_keyboard())
-        return
-    
-    # Slot
-    if text == "سلوت" or text == "🎰":
-        won, msg, points = SlotEngine.spin(user_id)
+    if current_game == 'logic':
+        correct, msg, points = GameEngine.play_logic(user_id, text)
         await update.message.reply_text(msg, reply_markup=play_again_keyboard())
+        del context.user_data['current_game']
         return
     
-    # Dice
-    if text.startswith("نرد "):
-        try:
-            parts = text.replace("نرد ", "").split()
-            bet = int(parts[0])
-            prediction = parts[1] if len(parts) > 1 else "high"
-            
-            if prediction in ["كبير", "high"]:
-                prediction = "high"
-            elif prediction in ["صغير", "low"]:
-                prediction = "low"
-            elif prediction in ["زوجي", "even"]:
-                prediction = "even"
-            elif prediction in ["فردي", "odd"]:
-                prediction = "odd"
-            
-            won, msg, points = DiceEngine.roll(user_id, prediction, bet)
-            await update.message.reply_text(msg, reply_markup=play_again_keyboard())
-        except:
-            await update.message.reply_text("الصيغة: `نرد 20 كبير`")
+    elif current_game == 'quiz':
+        correct, msg, points = GameEngine.play_quiz(user_id, text)
+        await update.message.reply_text(msg, reply_markup=play_again_keyboard())
+        del context.user_data['current_game']
+        return
+    
+    elif current_game == 'math':
+        correct, msg, points = GameEngine.play_math(user_id, text)
+        await update.message.reply_text(msg, reply_markup=play_again_keyboard())
+        del context.user_data['current_game']
+        return
+    
+    elif current_game == 'vocab':
+        correct, msg, points = GameEngine.play_vocab(user_id, text)
+        await update.message.reply_text(msg, reply_markup=play_again_keyboard())
+        del context.user_data['current_game']
+        return
+    
+    # Shortcuts
+    if text == "لغز" or text == "🧩":
+        puzzle = GameContent.get_logic()
+        context.user_data['current_game'] = 'logic'
+        await update.message.reply_text(f"🧩 {puzzle['q']}\n\nأرسل إجابتك:", reply_markup=back_keyboard())
+        return
+    
+    if text == "سؤال" or text == "❓":
+        quiz = GameContent.get_quiz()
+        context.user_data['current_game'] = 'quiz'
+        await update.message.reply_text(f"❓ {quiz['q']}\n\nأرسل إجابتك:", reply_markup=back_keyboard())
+        return
+    
+    if text == "رياضيات" or text == "🔢":
+        problem = GameContent.get_math()
+        context.user_data['current_game'] = 'math'
+        await update.message.reply_text(f"🔢 {problem['q']}\n\nأرسل الإجابة:", reply_markup=back_keyboard())
+        return
+    
+    if text == "مفردات" or text == "📝":
+        word = GameContent.get_vocab()
+        context.user_data['current_game'] = 'vocab'
+        await update.message.reply_text(f"📝 {word['q']}\n\nأرسل الترجمة:", reply_markup=back_keyboard())
+        return
+    
+    if text == "مكافأة" or text == "🎁":
+        success, msg = GameEngine.get_daily_bonus(user_id)
+        await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
+        return
+    
+    if text == "إحصائيات" or text == "📊":
+        await stats_handler(update, context)
+        return
+    
+    if text == "إنجازات" or text == "🏆":
+        await achievements_handler(update, context)
         return
     
     # Default
     await update.message.reply_text(
-        "🃏 العب من القائمة!",
+        "🎮 العب من القائمة أو استخدم:\n🧩 لغز\n❓ سؤال\n🔢 رياضيات\n📝 مفردات",
         reply_markup=main_menu_keyboard(user_id)
     )
 
 # ==================== MAIN ====================
 def main() -> None:
-    logger.info("🃏 Starting Card Games Bot...")
+    logger.info("🎮 Starting Smart Games Bot (No Gambling)...")
     
     if not TELEGRAM_AVAILABLE:
         logger.error("Telegram not available!")
@@ -754,23 +676,17 @@ def main() -> None:
     
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("stats", stats_handler))
-    app.add_handler(CommandHandler("help", lambda u, c: u.message.reply_text("""الأوامر:
+    app.add_handler(CommandHandler("achievements", achievements_handler))
+    app.add_handler(CommandHandler("help", lambda u, c: u.message.reply_text("""🎮 الأوامر:
 /start - بدء
-/stats - إحصائيات
+/stats - إحصائياتك
+/achievements - إنجازاتك
 
-🃏 ورق:
-ورق 20 - ابدأ بلعبة
-hit - سحب ورقة
-stand - توقف
-
-🎰 سلوت:
-سلوت - تدوير
-
-🎲 نرد:
-نرد 20 كبير - تخمين
-نرد 20 صغير
-نرد 20 زوجي
-نرد 20 فردي
+🧩 لغز - لعبة منطقية
+❓ سؤال - سؤال عام
+🔢 رياضيات - مسألة
+📝 مفردات - ترجمة
+🎁 مكافأة - مكافأة يومية
 """))
     
     app.add_handler(CallbackQueryHandler(callback_handler))
