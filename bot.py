@@ -1,14 +1,12 @@
 """
-🤖 Crypto Wallet Bot - PvP Edition
-ألعاب تنافسية مع AI حكم
+🤖 Smart Game Bot - نظام ألعاب ذكي
+اكسب نقاطاً باللعب - بدون قمار!
 """
 
 import os
 import json
-import hashlib
 import random
 import string
-import asyncio
 import time
 from datetime import datetime, timedelta
 from enum import Enum
@@ -21,39 +19,37 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 @dataclass
 class Config:
     BOT_TOKEN: str = "8593254152:AAFm59iuO45KmWqnlxb0ufDPRN8kDH6mjGc"
-    # PvP Games
-    PVP_MIN_BET: int = 20
-    PVP_MAX_BET: int = 500
-    TOURNAMENT_ENTRY_FEE: int = 100
-    LEADERBOARD_SIZE: int = 10
+    # نظام النقاط
+    POINTS_PER_GAME: int = 10        # نقاط لكل لعبة تلعبها
+    WIN_BONUS: int = 20              # نقاط إضافية للفوز
+    STREAK_BONUS: int = 5            # نقاط لكل سلسلة انتصارات
+    DAILY_PLAY_BONUS: int = 50       # نقاط إضافية للعب اليومي
+    LEVEL_UP_BONUS: int = 100        # نقاط عند الصعود لمستوى
+    # حدود اللعب
+    FREE_GAMES_DAILY: int = 10       # ألعاب مجانية يومياً
+    MAX_LEVEL: int = 50
     # AI
-    AI_JUDGE_ENABLED: bool = True
+    AI_ENABLED: bool = True
 
 config = Config()
 
 # ==================== ENUMS ====================
-class GameType(Enum):
-    COIN_FLIP = "coin_flip"
-    NUMBER_GUESS = "number_guess"
-    ROCK_PAPER_SCISSORS = "rps"
-    TIC_TAC_TOE = "tictactoe"
-    MEMORY_GAME = "memory"
-    QUIZ_BATTLE = "quiz_battle"
-    SPEED_TYPING = "speed_typing"
-    TRIVIA_BATTLE = "trivia_battle"
+class UserLevel(Enum):
+    NOVICE = 1        # مبتدئ
+    BEGINNER = 2      # مبتدئ
+    AMATEUR = 3       # هاوٍ
+    SKILLED = 4       # ماهر
+    EXPERT = 5        # خبير
+    MASTER = 6        # أستاذ
+    LEGEND = 7        # أسطورة
 
-class MatchStatus(Enum):
-    WAITING = "waiting"
-    READY = "ready"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    DISPUTED = "disputed"
-
-class TournamentStatus(Enum):
-    REGISTRATION = "registration"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
+class GameCategory(Enum):
+    PUZZLE = "puzzle"        # ألغاز
+    MEMORY = "memory"        # ذاكرة
+    QUIZ = "quiz"            # أسئلة
+    REFLEX = "reflex"        # ردود فعل
+    STRATEGY = "strategy"    # استراتيجية
+    CREATIVE = "creative"    # إبداع
 
 # ==================== DATA CLASSES ====================
 @dataclass
@@ -62,77 +58,63 @@ class User:
     username: str = ""
     first_name: str = ""
     last_name: str = ""
-    balance: float = 0.0
+    # النقاط والخبرة
     points: int = 0
+    experience: int = 0
     level: int = 1
-    referral_code: str = ""
-    # PvP Stats
-    pvp_wins: int = 0
-    pvp_losses: int = 0
-    pvp_draws: int = 0
-    total_pvp_bets: int = 0
-    biggest_win: int = 0
-    current_streak: int = 0
-    best_streak: int = 0
-    # Tournaments
-    tournaments_won: int = 0
-    tournament_points: int = 0
-    # Games
+    # الإحصائيات
     games_played: int = 0
     games_won: int = 0
-    # AI
-    ai_chats: int = 0
-    # Security
+    games_lost: int = 0
+    current_streak: int = 0
+    best_streak: int = 0
+    # المكافآت
+    daily_bonus_claimed: bool = False
+    last_claim_date: str = ""
+    total_earnings: int = 0
+    # التحديات
+    challenges_completed: int = 0
+    puzzles_solved: int = 0
+    quizzes_answered: int = 0
+    # الوقت
+    join_date: str = field(default_factory=lambda: datetime.now().isoformat())
+    last_play: str = ""
+    # الأمان
     is_banned: bool = False
     is_admin: bool = False
-    pin_code: str = ""
-    join_date: str = field(default_factory=lambda: datetime.now().isoformat())
 
 @dataclass
-class PvPMatch:
+class GameSession:
     id: str
+    user_id: int
     game_type: str
-    player1_id: int
-    player2_id: int
-    bet_amount: int
-    status: str
-    player1_move: str = ""
-    player2_move: str = ""
-    winner_id: int = None
-    prize: int = 0
-    ai_judge_comment: str = ""
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    ended_at: str = ""
-
-@dataclass
-class Tournament:
-    id: str
-    name: str
-    game_type: str
-    entry_fee: int
-    max_players: int
-    status: str
-    players: List[Dict] = field(default_factory=list)
-    rounds: List[Dict] = field(default_factory=list)
-    winner_id: int = None
-    prize_pool: int = 0
+    category: str
+    difficulty: str
+    score: int = 0
+    time_taken: int = 0
+    won: bool = False
+    points_earned: int = 0
+    bonus_points: int = 0
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
 @dataclass
-class Leaderboard:
-    type: str  # daily, weekly, monthly, all_time
+class DailyChallenge:
+    id: str
+    user_id: int
     game_type: str
-    entries: List[Dict] = field(default_factory=list)
-    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    target: int
+    progress: int = 0
+    completed: bool = False
+    reward: int = 0
+    expires_at: str = ""
 
 # ==================== DATABASE ====================
 class Database:
     def __init__(self):
         self.users_file = "users.json"
-        self.matches_file = "pvp_matches.json"
-        self.tournaments_file = "tournaments.json"
-        self.leaderboard_file = "leaderboard.json"
-        self.challenges_file = "challenges.json"
+        self.sessions_file = "game_sessions.json"
+        self.challenges_file = "daily_challenges.json"
+        self.puzzles_file = "puzzles.json"
     
     def load_users(self) -> Dict:
         try:
@@ -145,38 +127,16 @@ class Database:
         with open(self.users_file, "w") as f:
             json.dump(users, f, ensure_ascii=False, indent=2)
     
-    def load_matches(self) -> List:
+    def load_sessions(self) -> List:
         try:
-            with open(self.matches_file, "r") as f:
+            with open(self.sessions_file, "r") as f:
                 return json.load(f)
         except:
             return []
     
-    def save_matches(self, matches: List):
-        with open(self.matches_file, "w") as f:
-            json.dump(matches, f, ensure_ascii=False, indent=2)
-    
-    def load_tournaments(self) -> List:
-        try:
-            with open(self.tournaments_file, "r") as f:
-                return json.load(f)
-        except:
-            return []
-    
-    def save_tournaments(self, tournaments: List):
-        with open(self.tournaments_file, "w") as f:
-            json.dump(tournaments, f, ensure_ascii=False, indent=2)
-    
-    def load_leaderboard(self) -> Dict:
-        try:
-            with open(self.leaderboard_file, "r") as f:
-                return json.load(f)
-        except:
-            return {}
-    
-    def save_leaderboard(self, data: Dict):
-        with open(self.leaderboard_file, "w") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+    def save_sessions(self, sessions: List):
+        with open(self.sessions_file, "w") as f:
+            json.dump(sessions, f, ensure_ascii=False, indent=2)
     
     def load_challenges(self) -> List:
         try:
@@ -188,17 +148,53 @@ class Database:
     def save_challenges(self, challenges: List):
         with open(self.challenges_file, "w") as f:
             json.dump(challenges, f, ensure_ascii=False, indent=2)
+    
+    def load_puzzles(self) -> List:
+        try:
+            with open(self.puzzles_file, "r") as f:
+                return json.load(f)
+        except:
+            return self.get_default_puzzles()
+    
+    def save_puzzles(self, puzzles: List):
+        with open(self.puzzles_file, "w") as f:
+            json.dump(puzzles, f, ensure_ascii=False, indent=2)
+    
+    def get_default_puzzles(self) -> List:
+        return [
+            # ألغاز منطقية
+            {"type": "logic", "question": "ما هو الرقم التالي: 2، 6، 12، 20، 30، ...", "answer": "42", "hint": "الفروق: 4، 6، 8، 10، 12"},
+            {"type": "logic", "question": "ما هو الرقم الخطأ: 2، 3، 5، 8، 12، 17", "answer": "12", "hint": "كل رقم هو مجموع السابقتين + 1"},
+            {"type": "logic", "question": "أكمل السلسلة: أ، ج، هـ، ...", "answer": "و", "hint": "الحروف المتحركة"},
+            {"type": "logic", "question": "إذا كان A=1، B=2، ما هو CAB؟", "answer": "312", "hint": "C=3, A=1, B=2"},
+            {"type": "logic", "question": "ما هو اليوم بعد tomorrow yesterday؟", "answer": "اليوم", "hint": "فكر في المعنى"},
+            # ألغاز رياضية
+            {"type": "math", "question": "ما هو 7 × 8 - 4؟", "answer": "52", "hint": "الضرب أولاً"},
+            {"type": "math", "question": "ما هو 100 ÷ 4 + 3 × 5؟", "answer": "40", "hint": "العمليات بالترتيب"},
+            {"type": "math", "question": "ما هو مربع 12؟", "answer": "144", "hint": "12 × 12"},
+            {"type": "math", "question": "ما هو 15% من 200؟", "answer": "30", "hint": "15 ÷ 100 × 200"},
+            # ألغاز كلمات
+            {"type": "word", "question": "ما هو عكس 'ساخن'؟", "answer": "بارد", "hint": "برد"},
+            {"type": "word", "question": "ما هو جمع 'كتاب'؟", "answer": "كتب", "hint": "ك ت ب"},
+            {"type": "word", "question": "ما هو اسم الفاعل من 'كتب'؟", "answer": "كاتب", "hint": "يكتب"},
+            # ألغاز عامة
+            {"type": "general", "question": "ما هو أكبر كوكب في النظام الشمسي؟", "answer": "المشتري", "hint": "كبير"},
+            {"type": "general", "question": "ما عاصمة فرنسا؟", "answer": "باريس", "hint": "برج"},
+            {"type": "general", "question": "من مكتشف أمريكا؟", "answer": "كولومبوس", "hint": "كريستوفر"},
+            {"type": "general", "question": "كم قارة في العالم؟", "answer": "7", "hint": "سبع"},
+            {"type": "general", "question": "ما أطول نهر في العالم؟", "answer": "النيل", "hint": "في أفريقيا"},
+        ]
 
 db = Database()
 
 # ==================== HELPERS ====================
-def generate_id(prefix: str, length: int = 10) -> str:
+def generate_id(prefix: str = "ID", length: int = 8) -> str:
     return prefix + "-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 def get_user(user_id: int) -> User:
     users = db.load_users()
     if str(user_id) not in users:
-        user = User(user_id=user_id, referral_code=generate_id("REF", 8))
+        user = User(user_id=user_id)
         users[str(user_id)] = asdict(user)
         db.save_users(users)
         return user
@@ -210,450 +206,373 @@ def update_user(user_id: int, data: Dict):
         users[str(user_id)].update(data)
         db.save_users(users)
 
-# ==================== AI JUDGE ====================
-class AIJudge:
-    """AI حكم ذكي للمباريات"""
+def get_level_info(level: int) -> Tuple[str, int]:
+    """معلومات المستوى"""
+    levels = {
+        1: ("مبتدئ", 0),
+        2: ("هاوٍ", 100),
+        3: ("ماهر", 300),
+        4: ("خبير", 600),
+        5: ("أستاذ", 1000),
+        6: ("محترف", 1500),
+        7: ("أسطورة", 2500),
+        8: ("موهوب", 4000),
+        9: ("عبقري", 6000),
+        10: ("خرافي", 10000),
+    }
+    
+    for lvl in range(10, 0, -1):
+        if level >= lvl:
+            return levels.get(lvl, ("غير معروف", 0))
+    return ("مبتدئ", 0)
+
+def calculate_level(experience: int) -> int:
+    """حساب المستوى من الخبرة"""
+    thresholds = [0, 100, 300, 600, 1000, 1500, 2500, 4000, 6000, 10000, 15000, 20000]
+    for i, threshold in enumerate(thresholds):
+        if experience < threshold:
+            return i + 1
+    return len(thresholds)
+
+def get_xp_for_next_level(current_level: int) -> int:
+    """الخبرة المطلوبة للمستوى التالي"""
+    thresholds = [0, 100, 300, 600, 1000, 1500, 2500, 4000, 6000, 10000, 15000, 20000]
+    if current_level < len(thresholds):
+        return thresholds[current_level]
+    return thresholds[-1]
+
+# ==================== GAMES ====================
+GAMES = {
+    # ألغاز
+    "puzzle": {
+        "name": "🧩 لغز",
+        "category": "puzzle",
+        "description": "حل الألغاز المنطقية",
+        "base_points": 15,
+        "win_bonus": 10,
+        "difficulty_levels": ["easy", "medium", "hard"]
+    },
+    "math_puzzle": {
+        "name": "🔢 لغز رياضي",
+        "category": "puzzle",
+        "description": "حل المسائل الرياضية",
+        "base_points": 12,
+        "win_bonus": 8,
+        "difficulty_levels": ["easy", "medium", "hard"]
+    },
+    # ذاكرة
+    "memory": {
+        "name": "🧠 ذاكرة",
+        "category": "memory",
+        "description": "تذكر تسلسل الأرقام",
+        "base_points": 10,
+        "win_bonus": 5,
+        "difficulty_levels": ["easy", "medium", "hard"]
+    },
+    # أسئلة
+    "quiz": {
+        "name": "❓ سؤال",
+        "category": "quiz",
+        "description": "أجب على الأسئلة العامة",
+        "base_points": 8,
+        "win_bonus": 5,
+        "difficulty_levels": ["easy", "medium", "hard"]
+    },
+    # ردود فعل
+    "reflex": {
+        "name": "⚡ ردود فعل",
+        "category": "reflex",
+        "description": "اضغط في الوقت المناسب",
+        "base_points": 10,
+        "win_bonus": 7,
+        "difficulty_levels": ["easy", "medium", "hard"]
+    },
+    # سرعة
+    "speed": {
+        "name": "🚀 سرعة",
+        "category": "reflex",
+        "description": "أجب بسرعة",
+        "base_points": 12,
+        "win_bonus": 8,
+        "difficulty_levels": ["easy", "medium", "hard"]
+    },
+}
+
+def get_puzzle(difficulty: str = "medium") -> Dict:
+    """الحصول على لغز عشوائي"""
+    puzzles = db.load_puzzles()
+    
+    if difficulty == "easy":
+        filtered = [p for p in puzzles if p.get("type") in ["word", "general"]]
+    elif difficulty == "hard":
+        filtered = [p for p in puzzles if p.get("type") == "logic"]
+    else:
+        filtered = puzzles
+    
+    return random.choice(filtered) if filtered else puzzles[0]
+
+def get_quiz_question(difficulty: str = "medium") -> Dict:
+    """الحصول على سؤال"""
+    quizzes = [
+        {"q": "ما عاصمة اليابان؟", "a": "طوكيو", "options": ["طوكيو", "كيوتو", "أوساكا", "يوكوهاما"]},
+        {"q": "من написа 'Romeo and Juliet'؟", "a": "شكسبير", "options": ["شكسبير", "ديكنز", "هاملت", "برنارد شو"]},
+        {"q": "ما هو العنصر الرمز 'O'؟", "a": "الأكسجين", "options": ["الأكسجين", "الذهب", "الفضة", "الحديد"]},
+        {"q": "كم عدد ألوان قوس قزح؟", "a": "7", "options": ["7", "6", "8", "5"]},
+        {"q": "ما هو أكبر محيط؟", "a": "الهادئ", "options": ["الهادئ", "الأطلسي", "الهندي", "القطبي"]},
+        {"q": "من هو مؤسس فيسبوك؟", "a": "مارك", "options": ["مارك", "إيلون", "جيف", "بيل"]},
+        {"q": "ما هو أقرب كوكب للشمس؟", "a": "عطارد", "options": ["عطارد", "الزهرة", "المريخ", "الأرض"]},
+        {"q": "كم عدد أسنان الإنسان البالغ؟", "a": "32", "options": ["32", "28", "30", "34"]},
+    ]
+    return random.choice(quizzes)
+
+def play_game(user_id: int, game_type: str, user_answer: str, difficulty: str = "medium") -> Tuple[bool, str, int]:
+    """اللعب - كلعبة تكسب نقاط بغض النظر عن النتيجة!"""
+    user = get_user(user_id)
+    
+    if game_type not in GAMES:
+        return False, "اللعبة غير موجودة", 0
+    
+    game = GAMES[game_type]
+    won = False
+    points_earned = game["base_points"]
+    bonus_points = 0
+    
+    # التحقق من الإجابة
+    if game_type in ["puzzle", "math_puzzle"]:
+        puzzle = get_puzzle(difficulty)
+        correct_answer = puzzle.get("answer", "").strip().lower()
+        user_answer = user_answer.strip().lower()
+        
+        if correct_answer == user_answer:
+            won = True
+            bonus_points = game["win_bonus"]
+            points_earned += bonus_points
+            feedback = f"✅ إجابة صحيحة! +{points_earned} نقطة"
+        else:
+            feedback = f"❌ إجابة خاطئة. الإجابة: {puzzle['answer']}\n💡 تلميح: {puzzle.get('hint', '')}\n+{points_earned} نقطة للمحاولة!"
+    
+    elif game_type == "quiz":
+        quiz = get_quiz_question(difficulty)
+        correct_answer = quiz.get("a", "").strip()
+        
+        if user_answer.strip() == correct_answer:
+            won = True
+            bonus_points = game["win_bonus"]
+            points_earned += bonus_points
+            feedback = f"✅ إجابة صحيحة! +{points_earned} نقطة"
+        else:
+            feedback = f"❌ الإجابة الصحيحة: {correct_answer}\n+{points_earned} نقطة للمحاولة!"
+    
+    elif game_type == "memory":
+        # لعبة الذاكرة - محاكاة
+        try:
+            user_num = int(user_answer)
+            target = random.randint(1, 9)
+            if user_num == target:
+                won = True
+                bonus_points = game["win_bonus"]
+                points_earned += bonus_points
+                feedback = f"✅ تذكرت الرقم {target}! +{points_earned} نقطة"
+            else:
+                feedback = f"الرقم كان {target}. +{points_earned} نقطة!",
+        except:
+            feedback = "أدخل رقماً من 1-9"
+            points_earned = 0
+    
+    else:
+        # ألعاب أخرى
+        won = random.random() > 0.5
+        if won:
+            bonus_points = game["win_bonus"]
+            points_earned += bonus_points
+            feedback = f"✅ فزت! +{points_earned} نقطة"
+        else:
+            feedback = f"حاول مرة أخرى! +{points_earned} نقطة"
+    
+    # تحديث المستخدم
+    new_streak = user.current_streak + 1 if won else 0
+    streak_bonus = new_streak * config.STREAK_BONUS if won else 0
+    
+    total_points = points_earned + streak_bonus
+    new_experience = user.experience + total_points
+    new_level = calculate_level(new_experience)
+    
+    level_up = new_level > user.level
+    if level_up:
+        total_points += config.LEVEL_UP_BONUS
+        new_experience += config.LEVEL_UP_BONUS
+    
+    update_user(user_id, {
+        "points": user.points + total_points,
+        "experience": new_experience,
+        "level": new_level,
+        "games_played": user.games_played + 1,
+        "games_won": user.games_won + 1 if won else user.games_won,
+        "games_lost": user.games_lost + 1 if not won else user.games_lost,
+        "current_streak": new_streak,
+        "best_streak": max(user.best_streak, new_streak),
+        "total_earnings": user.total_earnings + total_points,
+        "puzzles_solved": user.puzzles_solved + 1 if game_type == "puzzle" else user.puzzles_solved,
+        "quizzes_answered": user.quizzes_answered + 1 if game_type == "quiz" else user.quizzes_answered,
+        "last_play": datetime.now().isoformat()
+    })
+    
+    # حفظ الجلسة
+    session = GameSession(
+        id=generate_id("SESSION"),
+        user_id=user_id,
+        game_type=game_type,
+        category=game["category"],
+        difficulty=difficulty,
+        score=points_earned,
+        won=won,
+        points_earned=total_points,
+        bonus_points=bonus_points + streak_bonus
+    )
+    sessions = db.load_sessions()
+    sessions.append(asdict(session))
+    db.save_sessions(sessions)
+    
+    result_msg = feedback
+    if level_up:
+        level_name, _ = get_level_info(new_level)
+        result_msg += f"\n🎉 تهانينا! صعدت للمستوى {new_level} ({level_name})! +{config.LEVEL_UP_BONUS} نقطة"
+    
+    if won and new_streak >= 3:
+        result_msg += f"\n🔥 سلسلة انتصارات: {new_streak}! +{streak_bonus} نقطة"
+    
+    return won, result_msg, total_points
+
+def get_daily_bonus(user_id: int) -> Tuple[bool, str]:
+    """المكافأة اليومية"""
+    user = get_user(user_id)
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    if user.last_claim_date == today and user.daily_bonus_claimed:
+        return False, "المكافأة اليومية مُطالَبة بالفعل!"
+    
+    update_user(user_id, {
+        "points": user.points + config.DAILY_PLAY_BONUS,
+        "daily_bonus_claimed": True,
+        "last_claim_date": today
+    })
+    
+    return True, f"✅ مكافأة يومية: +{config.DAILY_PLAY_BONUS} نقطة!"
+
+def get_user_stats(user_id: int) -> str:
+    """إحصائيات المستخدم"""
+    user = get_user(user_id)
+    level_name, _ = get_level_info(user.level)
+    
+    win_rate = (user.games_won / user.games_played * 100) if user.games_played > 0 else 0
+    
+    next_level_xp = get_xp_for_next_level(user.level)
+    progress = (user.experience / next_level_xp * 100) if next_level_xp > 0 else 100
+    
+    stats = f"""📊 إحصائياتك
+━━━━━━━━━━━━━━━━
+🎮 المستوى: {user.level} ({level_name})
+⭐ النقاط: {user.points}
+📈 الخبرة: {user.experience}/{next_level_xp}
+
+📊 الألعاب:
+• لعبت: {user.games_played}
+• فزت: {user.games_won}
+• خسرت: {user.games_lost}
+• نسبة الفوز: {win_rate:.1f}%
+
+🔥 السلسلة:
+• الحالية: {user.current_streak}
+• الأفضل: {user.best_streak}
+
+🏆 الإنجازات:
+• الألغاز: {user.puzzles_solved}
+• الأسئلة: {user.quizzes_answered}
+• المكاسب: {user.total_earnings}
+
+📏 التقدم للمستوى التالي:
+[{('█' * int(progress/10)) + ('░' * (10-int(progress/10)))}] {progress:.1f}%
+━━━━━━━━━━━━━━━━"""
+    return stats
+
+# ==================== AI ASSISTANT ====================
+class AIAssistant:
+    """مساعد ذكي"""
     
     def __init__(self):
-        self.comments = {
-            "fair_play": [
-                "🤖 الحكم: لعبة عادلة! كلا اللاعبين لعبا بشكل ممتاز.",
-                "🤖 الحكم: أداء مذهل من الطرفين!",
-                "🤖 الحكم: هذه المباراة كانت مثيرة!",
+        self.tips = {
+            "puzzle": [
+                "💡 نصيحة: فكر في الأنماط!",
+                "💡 حلل السؤال بعناية",
+                "💡 جرب كل الاحتمالات",
             ],
-            "close_match": [
-                "🤖 الحكم: المباراة كانت متقاربة جداً!",
-                "🤖 الحكم: الفارق كان ضئيلاً!",
-                "🤖 الحكم: أي لاعب كان يمكن أن يفوز!",
+            "quiz": [
+                "💡 اقرأ السؤال بتمعن",
+                "💡 استبعد الإجابات الخاطئة",
+                "💡 ثق بحدسك",
             ],
-            "domination": [
-                "🤖 الحكم: أداء ساحق من الفائز!",
-                "🤖 الحكم: السيطرة كانت كاملة!",
-                "🤖 الحكم: لاعب واحد كان واضحاً الأفضل!",
-            ],
-            "comeback": [
-                "🤖 الحكم:逆转 رائع!",
-                "🤖 الحكم: لم يستسلم وحقق الفوز!",
-                "🤖 الحكم: قلب الموازين في اللحظة الأخيرة!",
-            ],
-            "draw": [
-                "🤖 الحكم: تعادل عادل!",
-                "🤖 الحكم: كلا اللاعبين يستحقان التقدير!",
-                "🤖 الحكم: مباراة مثيرة انتهت بالتعادل!",
-            ],
-            "dispute": [
-                "🤖 الحكم: هناك لبس في النتيجة. سأفحص مرة أخرى.",
-                "🤖 الحكم: يتطلب الأمر مراجعة.",
+            "memory": [
+                "💡 ركز على التسلسل",
+                "💡 كرر بصوت عالٍ",
+                "💡 تخيل الأرقام",
             ]
         }
     
-    def judge_match(self, match: PvPMatch, player1: User, player2: User) -> str:
-        """الحكم في المباراة"""
+    def get_tip(self, game_type: str) -> str:
+        return random.choice(self.tips.get(game_type, ["💡 حاول مرة أخرى!"]))
+    
+    def analyze_performance(self, user: User) -> str:
+        if user.games_played == 0:
+            return "🌟 مبتدئ جديد! ابدأ اللعب لكسب النقاط!"
         
-        if match.winner_id is None:
-            return random.choice(self.comments["draw"])
+        win_rate = user.games_won / user.games_played
         
-        winner = player1 if match.winner_id == player1.user_id else player2
-        loser = player2 if match.winner_id == player1.user_id else player1
-        
-        # تحليل سير المباراة
-        score_diff = abs(winner.pvp_wins - loser.pvp_wins)
-        
-        if score_diff > 10:
-            return random.choice(self.comments["domination"]) + f"\n🎉 تهانينا لـ {winner.first_name}!"
-        elif score_diff <= 2:
-            return random.choice(self.comments["close_match"]) + f"\n🎉 مبروك لـ {winner.first_name}!"
+        if win_rate >= 0.8:
+            return f"🔥 أداء رائع! {user.games_won} فوز من {user.games_played}!",
+        elif win_rate >= 0.6:
+            return f"⭐ أداء جيد! استمر في التقدم!",
+        elif win_rate >= 0.4:
+            return f"💪 جيد!Practice makes perfect!",
         else:
-            return random.choice(self.comments["fair_play"]) + f"\n🎉 تهانينا لـ {winner.first_name}!"
+            return f"🎯 كل محاولة تقربك من النجاح!"
     
-    def analyze_player(self, user: User) -> str:
-        """تحليل أداء اللاعب"""
-        if user.pvp_wins + user.pvp_losses == 0:
-            return f"⚡ {user.first_name} لاعب جديد يبحث عن التحديات!"
-        
-        win_rate = (user.pvp_wins / (user.pvp_wins + user.pvp_losses)) * 100
-        
-        if win_rate >= 80:
-            return f"🔥 {user.first_name} أسطورة! نسبة الفوز {win_rate:.1f}%"
-        elif win_rate >= 60:
-            return f"⭐ {user.first_name} لاعب قوي! نسبة الفوز {win_rate:.1f}%"
-        elif win_rate >= 40:
-            return f"💪 {user.first_name} منافس شرس! نسبة الفوز {win_rate:.1f}%"
+    def suggest_game(self, user: User) -> str:
+        if user.puzzles_solved < 5:
+            return "🎯 جرب ألغاز بسيطة!",
+        elif user.quizzes_answered < 10:
+            return "❓ جرب أسئلة متنوعة!",
         else:
-            return f"🎯 {user.first_name} يحتاج ممارسة أكثر"
-    
-    def get_match_prediction(self, player1: User, player2: User) -> str:
-        """تنبؤ بنتيجة المباراة"""
-        p1_rate = player1.pvp_wins / max(1, player1.pvp_wins + player1.pvp_losses)
-        p2_rate = player2.pvp_wins / max(1, player2.pvp_wins + player2.pvp_losses)
-        
-        diff = abs(p1_rate - p2_rate)
-        
-        if diff > 0.3:
-            leader = player1 if p1_rate > p2_rate else player2
-            return f"🤖 التوقع: {leader.first_name} favorito"
-        else:
-            return "🤖 التوقع: المباراة متقاربة جداً!"
-    
-    def generate_cheer_message(self, user_id: int) -> str:
-        """رسالة تشجيع"""
-        messages = [
-            "💪 You've got this!",
-            "🔥 Fight!",
-            "⭐ You can do it!",
-            "🎯 Focus and win!",
-            "🏆 Champion material!",
-        ]
-        return random.choice(messages)
+            return "🚀 جرب جميع الألعاب!",
 
-ai_judge = AIJudge()
-
-# ==================== PVP GAMES ====================
-PVP_GAMES = {
-    "coin_flip": {
-        "name": "🪙 قلب العملة",
-        "description": "اختر رأس أو كتابة",
-        "moves": ["head", "tail"],
-        "min_bet": 20,
-        "max_bet": 500
-    },
-    "rps": {
-        "name": "✊✋✌ حجر ورقة مقص",
-        "description": "اختر حجر، ورقة، أو مقص",
-        "moves": ["rock", "paper", "scissors"],
-        "min_bet": 20,
-        "max_bet": 500
-    },
-    "number_guess": {
-        "name": "🔢 تخمين الرقم",
-        "description": "من 1-10",
-        "moves": [str(i) for i in range(1, 11)],
-        "min_bet": 30,
-        "max_bet": 300
-    },
-    "dice": {
-        "name": "🎲 النرد",
-        "description": "اختر رقم من 1-6",
-        "moves": [str(i) for i in range(1, 7)],
-        "min_bet": 20,
-        "max_bet": 400
-    }
-}
-
-def determine_winner(game_type: str, move1: str, move2: str) -> Optional[int]:
-    """تحديد الفائز"""
-    if game_type == "coin_flip":
-        return 1 if move1 == move2 else 2
-    
-    elif game_type == "rps":
-        wins = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
-        if move1 == move2:
-            return None  # تعادل
-        if wins[move1] == move2:
-            return 1
-        return 2
-    
-    elif game_type == "number_guess":
-        target = random.randint(1, 10)
-        try:
-            p1_guess = int(move1)
-            p2_guess = int(move2)
-            p1_diff = abs(target - p1_guess)
-            p2_diff = abs(target - p2_guess)
-            
-            if p1_diff < p2_diff:
-                return 1
-            elif p2_diff < p1_diff:
-                return 2
-            else:
-                return None
-        except:
-            return None
-    
-    elif game_type == "dice":
-        target = random.randint(1, 6)
-        try:
-            p1_guess = int(move1)
-            p2_guess = int(move2)
-            p1_diff = abs(target - p1_guess)
-            p2_diff = abs(target - p2_guess)
-            
-            if p1_diff < p2_diff:
-                return 1
-            elif p2_diff < p1_diff:
-                return 2
-            else:
-                return None
-        except:
-            return None
-    
-    return None
-
-def create_pvp_match(player1_id: int, player2_id: int, game_type: str, bet: int) -> PvPMatch:
-    match = PvPMatch(
-        id=generate_id("MATCH"),
-        game_type=game_type,
-        player1_id=player1_id,
-        player2_id=player2_id,
-        bet_amount=bet,
-        status=MatchStatus.READY.value,
-        prize=bet * 2
-    )
-    
-    matches = db.load_matches()
-    matches.append(asdict(match))
-    db.save_matches(matches)
-    
-    return match
-
-def play_pvp_match(match_id: str, player_id: int, move: str) -> Tuple[bool, str]:
-    """اللعب في مباراة PvP"""
-    matches = db.load_matches()
-    
-    for match_dict in matches:
-        if match_dict["id"] == match_id:
-            match = PvPMatch(**match_dict)
-            
-            # التحقق من اللاعب
-            if player_id == match.player1_id:
-                if match.player1_move:
-                    return False, "لقد لعبت بالفعل!"
-                match.player1_move = move
-            elif player_id == match.player2_id:
-                if match.player2_move:
-                    return False, "لقد لعبت بالفعل!"
-                match.player2_move = move
-            else:
-                return False, "لست جزءاً من هذه المباراة!"
-            
-            # التحقق من اكتمال اللعبتين
-            if match.player1_move and match.player2_move:
-                match.status = MatchStatus.IN_PROGRESS.value
-                
-                # تحديد الفائز
-                winner = determine_winner(match.game_type, match.player1_move, match.player2_move)
-                
-                player1 = get_user(match.player1_id)
-                player2 = get_user(match.player2_id)
-                
-                if winner is None:
-                    # تعادل
-                    match.winner_id = None
-                    match.status = MatchStatus.COMPLETED.value
-                    
-                    # استرداد الرهان
-                    update_user(match.player1_id, {"points": player1.points + match.bet_amount})
-                    update_user(match.player2_id, {"points": player2.points + match.bet_amount})
-                    
-                    update_user(match.player1_id, {"pvp_draws": player1.pvp_draws + 1})
-                    update_user(match.player2_id, {"pvp_draws": player2.pvp_draws + 1})
-                    
-                    match.ai_judge_comment = random.choice(ai_judge.comments["draw"])
-                    
-                else:
-                    # تحديد الفائز
-                    winner_id = match.player1_id if winner == 1 else match.player2_id
-                    loser_id = match.player2_id if winner == 1 else match.player1_id
-                    
-                    match.winner_id = winner_id
-                    match.status = MatchStatus.COMPLETED.value
-                    
-                    winner_user = get_user(winner_id)
-                    loser_user = get_user(loser_id)
-                    
-                    # منح الجائزة
-                    prize = match.bet_amount * 2
-                    update_user(winner_id, {
-                        "points": winner_user.points + prize,
-                        "pvp_wins": winner_user.pvp_wins + 1,
-                        "current_streak": winner_user.current_streak + 1,
-                        "best_streak": max(winner_user.best_streak, winner_user.current_streak + 1),
-                        "biggest_win": max(winner_user.biggest_win, prize)
-                    })
-                    
-                    update_user(loser_id, {
-                        "pvp_losses": loser_user.pvp_losses + 1,
-                        "current_streak": 0
-                    })
-                    
-                    # تعليق الحكم
-                    match.ai_judge_comment = ai_judge.judge_match(match, player1, player2)
-                
-                match.ended_at = datetime.now().isoformat()
-            else:
-                match.status = MatchStatus.READY.value
-            
-            # حفظ
-            for i, m in enumerate(matches):
-                if m["id"] == match_id:
-                    matches[i] = asdict(match)
-                    break
-            db.save_matches(matches)
-            
-            return True, "تم تسجيل حركتك! انتظر اللاعب الآخر."
-    
-    return False, "المباراة غير موجودة"
-
-def get_active_matches(user_id: int) -> List[PvPMatch]:
-    matches = db.load_matches()
-    user_matches = []
-    
-    for m in matches:
-        if (m["player1_id"] == user_id or m["player2_id"] == user_id) and m["status"] in ["ready", "in_progress"]:
-            user_matches.append(PvPMatch(**m))
-    
-    return user_matches
-
-# ==================== CHALLENGES ====================
-def create_challenge(challenger_id: int, challenged_id: int, game_type: str, bet: int) -> bool:
-    """إنشاء تحدي"""
-    challenger = get_user(challenger_id)
-    challenged = get_user(challenged_id)
-    
-    if challenger.points < bet:
-        return False
-    if challenged.points < bet:
-        return False
-    
-    # خصم الرهان
-    update_user(challenger_id, {"points": challenger.points - bet})
-    
-    challenge = {
-        "id": generate_id("CHALLENGE"),
-        "challenger_id": challenger_id,
-        "challenged_id": challenged_id,
-        "game_type": game_type,
-        "bet_amount": bet,
-        "status": "pending",
-        "created_at": datetime.now().isoformat()
-    }
-    
-    challenges = db.load_challenges()
-    challenges.append(challenge)
-    db.save_challenges(challenges)
-    
-    return True
-
-def accept_challenge(challenge_id: str, user_id: int) -> Tuple[bool, str]:
-    """قبول التحدي"""
-    challenges = db.load_challenges()
-    
-    for ch in challenges:
-        if ch["id"] == challenge_id and ch["challenged_id"] == user_id and ch["status"] == "pending":
-            challenged = get_user(user_id)
-            
-            # خصم الرهان
-            update_user(user_id, {"points": challenged.points - ch["bet_amount"]})
-            
-            # إنشاء المباراة
-            create_pvp_match(ch["challenger_id"], user_id, ch["game_type"], ch["bet_amount"])
-            
-            ch["status"] = "accepted"
-            db.save_challenges(challenges)
-            
-            return True, "✅ تم قبول التحدي! ابدأ اللعب."
-    
-    return False, "التحدي غير موجود أو منتهي"
-
-# ==================== TOURNAMENTS ====================
-def create_tournament(name: str, game_type: str, max_players: int, entry_fee: int) -> Tournament:
-    tournament = Tournament(
-        id=generate_id("TOURNAMENT"),
-        name=name,
-        game_type=game_type,
-        entry_fee=entry_fee,
-        max_players=max_players,
-        status=TournamentStatus.REGISTRATION.value
-    )
-    
-    tournaments = db.load_tournaments()
-    tournaments.append(asdict(tournament))
-    db.save_tournaments(tournaments)
-    
-    return tournament
-
-def join_tournament(tournament_id: str, user_id: int) -> Tuple[bool, str]:
-    """الانضمام لبطولة"""
-    tournaments = db.load_tournaments()
-    user = get_user(user_id)
-    
-    for t in tournaments:
-        if t["id"] == tournament_id:
-            if t["status"] != TournamentStatus.REGISTRATION.value:
-                return False, "البطولة بدأت بالفعل!"
-            
-            if len(t["players"]) >= t["max_players"]:
-                return False, "البطولة ممتلئة!"
-            
-            if user.points < t["entry_fee"]:
-                return False, "نقاطك غير كافية!"
-            
-            # خصم رسوم الدخول
-            update_user(user_id, {"points": user.points - t["entry_fee"]})
-            
-            t["players"].append({
-                "user_id": user_id,
-                "name": user.first_name,
-                "wins": 0,
-                "losses": 0
-            })
-            t["prize_pool"] += t["entry_fee"]
-            
-            db.save_tournaments(tournaments)
-            return True, f"✅ انضممت للبطولة! رسوم الدخول: {t['entry_fee']} نقطة"
-    
-    return False, "البطولة غير موجودة"
-
-# ==================== LEADERBOARD ====================
-def update_leaderboard(game_type: str = "all"):
-    """تحديث لوحة المتصدرين"""
-    users = db.load_users()
-    
-    # ترتيب حسب النقاط
-    sorted_users = sorted(
-        [User(**u) for u in users.values()],
-        key=lambda x: x.points,
-        reverse=True
-    )[:config.LEADERBOARD_SIZE]
-    
-    leaderboard = {
-        "type": "all_time",
-        "game_type": game_type,
-        "entries": [
-            {
-                "rank": i + 1,
-                "user_id": u.user_id,
-                "name": u.first_name,
-                "points": u.points,
-                "wins": u.pvp_wins,
-                "win_rate": round((u.pvp_wins / max(1, u.pvp_wins + u.pvp_losses)) * 100, 1)
-            }
-            for i, u in enumerate(sorted_users)
-        ],
-        "updated_at": datetime.now().isoformat()
-    }
-    
-    db.save_leaderboard(leaderboard)
-    return leaderboard
+ai = AIAssistant()
 
 # ==================== KEYBOARDS ====================
 def main_menu_keyboard(user_id: int):
     user = get_user(user_id)
+    level_name, _ = get_level_info(user.level)
+    
     keyboard = [
-        [InlineKeyboardButton(f"💰 الرصيد: ⭐ {user.points}", callback_data="balance")],
-        [InlineKeyboardButton("⚔️ مبارزة", callback_data="pvp_menu")],
-        [InlineKeyboardButton("🏆 بطولات", callback_data="tournaments")],
-        [InlineKeyboardButton("📊 المتصدرين", callback_data="leaderboard")],
-        [InlineKeyboardButton("🎮 ألعاب منفردة", callback_data="single_games")],
-        [InlineKeyboardButton("🤖 AI الحكم", callback_data="ai_judge")],
+        [InlineKeyboardButton(f"🎮 المستوى {user.level} ({level_name}) | ⭐ {user.points}", callback_data="stats")],
+        [InlineKeyboardButton("🧩 ألغاز", callback_data="game_puzzle"), InlineKeyboardButton("❓ أسئلة", callback_data="game_quiz")],
+        [InlineKeyboardButton("🧠 ذاكرة", callback_data="game_memory"), InlineKeyboardButton("⚡ سرعة", callback_data="game_speed")],
+        [InlineKeyboardButton("🎯 تحدي", callback_data="daily_challenge"), InlineKeyboardButton("📊 إحصائيات", callback_data="stats")],
+        [InlineKeyboardButton("💡 نصائح AI", callback_data="ai_tips"), InlineKeyboardButton("🎁 مكافأة", callback_data="daily_bonus")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def pvp_games_keyboard():
+def games_keyboard():
     keyboard = []
-    for game_key, game_info in PVP_GAMES.items():
-        keyboard.append([InlineKeyboardButton(f"{game_info['name']} ({game_info['min_bet']}-{game_info['max_bet']}ن)", callback_data=f"pvp_{game_key}")])
+    for game_key, game in GAMES.items():
+        keyboard.append([InlineKeyboardButton(f"{game['name']} (+{game['base_points']}+{game['win_bonus']})", callback_data=f"play_{game_key}")])
     keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back")])
+    return InlineKeyboardMarkup(keyboard)
+
+def difficulty_keyboard(game_type: str):
+    keyboard = [
+        [InlineKeyboardButton("🟢 سهل", callback_data=f"diff_easy_{game_type}")],
+        [InlineKeyboardButton("🟡 متوسط", callback_data=f"diff_medium_{game_type}")],
+        [InlineKeyboardButton("🔴 صعب", callback_data=f"diff_hard_{game_type}")],
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 def back_keyboard():
@@ -665,84 +584,48 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     
     user_data = get_user(user_id)
+    level_name, _ = get_level_info(user_data.level)
     
-    welcome = f"""⚔️ مرحباً {user.first_name}!
+    welcome = f"""🎮 مرحباً {user.first_name}!
 
-🎮 نظام الألعاب التنافسية:
-• 🪙 قلب العملة
-• ✊✋✌ حجر ورقة مقص
-• 🔢 تخمين الرقم
-• 🎲 النرد
+✨ نظام اللعب الذكي:
+• كل لعبة تكسب نقاط!
+• الفوز يمنح نقاط إضافية
+• السلسلة تزيد المكافآت
+• المستوى يرفع النقاط
 
-🏆 البطولات متاحة!
-📊 لوحة المتصدرين
-🤖 AI حكم ذكي
+🎯 الألعاب:
+• 🧩 ألغاز منطقية
+• ❓ أسئلة عامة
+• 🧠 ذاكرة
+• ⚡ سرعة
 
-نقاطك: ⭐ {user_data.points}
+💰 كلعبة = {config.POINTS_PER_GAME} نقاط
+🏆 الفوز = +{config.WIN_BONUS} نقاط إضافية
+🔥 السلسلة = +{config.STREAK_BONUS} لكل سلسلة
+
+🎮 مستواك: {user_data.level} ({level_name})
+⭐ نقاطك: {user_data.points}
+📈 خبرك: {user_data.experience}
 """
     await update.message.reply_text(welcome, reply_markup=main_menu_keyboard(user_id))
 
-async def pvp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    
-    text = """⚔️ الألعاب التنافسية
-━━━━━━━━━━━━━━━━
-اختر لعبة للعب ضد خصم:
-"""
-    await update.message.reply_text(text, reply_markup=pvp_games_keyboard())
+    stats = get_user_stats(user_id)
+    await update.message.reply_text(stats, reply_markup=main_menu_keyboard(user_id))
 
-async def challenge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إنشاء تحدي"""
+async def games_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = """🎮 اختر لعبة للعب:
+━━━━━━━━━━━━━━━━
+كل لعبة تكسب نقاط بغض النظر عن النتيجة!
+"""
+    await update.message.reply_text(text, reply_markup=games_keyboard())
+
+async def bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    
-    text = """⚔️ إنشاء تحدي
-━━━━━━━━━━━━━━━━
-الصيغة:
-`تحدي [كود_الخصم] [اللعبة] [الرهان]`
-
-مثال:
-`تحدي REF-ABC123 coin_flip 50`
-
-الألعاب المتاحة:
-• coin_flip
-• rps
-• number_guess
-• dice
-"""
-    await update.message.reply_text(text, reply_markup=back_keyboard())
-
-async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض لوحة المتصدرين"""
-    leaderboard = update_leaderboard()
-    
-    text = "📊 لوحة المتصدرين\n━━━━━━━━━━━━━━━━\n"
-    
-    for entry in leaderboard["entries"]:
-        medal = "🥇" if entry["rank"] == 1 else "🥈" if entry["rank"] == 2 else "🥉" if entry["rank"] == 3 else f"{entry['rank']}."
-        text += f"{medal} {entry['name']}\n"
-        text += f"   ⭐ {entry['points']} نقطة | 🎮 {entry['wins']} فوز | {entry['win_rate']}%\n\n"
-    
-    await update.message.reply_text(text, reply_markup=main_menu_keyboard(update.message.from_user.id))
-
-async def tournament_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض البطولات"""
-    tournaments = db.load_tournaments()
-    
-    text = "🏆 البطولات\n━━━━━━━━━━━━━━━━\n"
-    
-    active_tournaments = [t for t in tournaments if t["status"] != "completed"]
-    
-    if not active_tournaments:
-        text += "لا توجد بطولات حالياً!\n\nأنشئ واحدة: `بطولة [الاسم] [اللعبة] [الحد] [الرسوم]`"
-    else:
-        for t in active_tournaments:
-            text += f"📌 {t['name']}\n"
-            text += f"   اللعبة: {t['game_type']}\n"
-            text += f"   اللاعبون: {len(t['players'])}/{t['max_players']}\n"
-            text += f"   الجائزة: {t['prize_pool']} نقطة\n"
-            text += f"   الحالة: {t['status']}\n\n"
-    
-    await update.message.reply_text(text, reply_markup=main_menu_keyboard(update.message.from_user.id))
+    success, msg = get_daily_bonus(user_id)
+    await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
 
 # ==================== CALLBACK HANDLERS ====================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -754,40 +637,69 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "back":
         await start_command(update, context)
-    elif data == "pvp_menu":
-        await pvp_command(update, context)
-    elif data == "leaderboard":
-        await leaderboard_command(update, context)
-    elif data == "tournaments":
-        await tournament_command(update, context)
-    elif data.startswith("pvp_"):
-        game_type = data.replace("pvp_", "")
-        if game_type in PVP_GAMES:
-            game = PVP_GAMES[game_type]
+    elif data == "stats":
+        stats = get_user_stats(user_id)
+        await query.edit_message_text(stats, reply_markup=main_menu_keyboard(user_id))
+    elif data == "daily_bonus":
+        success, msg = get_daily_bonus(user_id)
+        await query.edit_message_text(msg, reply_markup=main_menu_keyboard(user_id))
+    elif data == "ai_tips":
+        user = get_user(user_id)
+        tip = ai.get_tip("puzzle")
+        analysis = ai.analyze_performance(user)
+        suggestion = ai.suggest_game(user)
+        await query.edit_message_text(
+            f"🤖 نصائح AI\n━━━━━━━━━━━━━━━━\n\n"
+            f"{tip}\n\n{analysis}\n\n{suggestion}",
+            reply_markup=main_menu_keyboard(user_id)
+        )
+    elif data.startswith("game_"):
+        game_type = data.replace("game_", "")
+        if game_type in GAMES:
+            game = GAMES[game_type]
             await query.edit_message_text(
-                f"⚔️ {game['name']}\n"
+                f"{game['name']}\n"
                 f"{game['description']}\n\n"
-                f"الرهان: {game['min_bet']}-{game['max_bet']} نقطة\n\n"
-                f"أنشئ تحدي:
-`تحدي [كود_الخصم] {game_type} [الرهان]`\n\n"
-                f"أو العب عشوائياً:
-`عشوائي {game_type} [الرهان]`",
+                f"📊 النقاط:\n"
+                f"• الأساسية: {game['base_points']}\n"
+                f"• الفوز: +{game['win_bonus']}\n\n"
+                f"اختر المستوى:",
+                reply_markup=difficulty_keyboard(game_type)
+            )
+    elif data.startswith("play_"):
+        game_type = data.replace("play_", "")
+        if game_type in GAMES:
+            game = GAMES[game_type]
+            await query.edit_message_text(
+                f"🎮 {game['name']}\n\n"
+                f"أرسل إجابتك الآن!\n"
+                f"مثال: جواب 42\n\n"
+                f"💡 كل محاولة تكسب {game['base_points']} نقاط",
                 reply_markup=back_keyboard()
             )
-    elif data == "ai_judge":
-        user = get_user(user_id)
-        analysis = ai_judge.analyze_player(user)
-        await query.edit_message_text(
-            f"🤖 AI الحكم\n━━━━━━━━━━━━━━━━\n\n"
-            f"{analysis}\n\n"
-            f"إحصائياتك:\n"
-            f"• الفوز: {user.pvp_wins}\n"
-            f"• الخسارة: {user.pvp_losses}\n"
-            f"• التعادل: {user.pvp_draws}\n"
-            f"• أفضل سلسلة: {user.best_streak}\n"
-            f"• أكبر فوز: {user.biggest_win}",
-            reply_markup=back_keyboard()
-        )
+    elif data.startswith("diff_"):
+        parts = data.split("_")
+        difficulty = parts[1]
+        game_type = parts[2]
+        
+        if game_type == "puzzle":
+            puzzle = get_puzzle(difficulty)
+            await query.edit_message_text(
+                f"🧩 لغز ({difficulty})\n\n"
+                f"{puzzle['question']}\n\n"
+                f"أرسل: جواب [إجابتك]",
+                reply_markup=back_keyboard()
+            )
+        elif game_type == "quiz":
+            quiz = get_quiz_question(difficulty)
+            options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(quiz['options'])])
+            await query.edit_message_text(
+                f"❓ سؤال ({difficulty})\n\n"
+                f"{quiz['question']}\n\n"
+                f"{options_text}\n\n"
+                f"أرسل: جواب [رقم_الإجابة]",
+                reply_markup=back_keyboard()
+            )
 
 # ==================== MESSAGE HANDLER ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -795,135 +707,67 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user = get_user(user_id)
     
-    # تحدي
-    if text.startswith("تحدي "):
-        try:
-            parts = text.replace("تحدي ", "").split()
-            if len(parts) >= 3:
-                code = parts[0]
-                game_type = parts[1]
-                bet = int(parts[2])
-                
-                # البحث عن المستخدم
-                users = db.load_users()
-                challenged_id = None
-                for uid, udata in users.items():
-                    if udata.get("referral_code") == code:
-                        challenged_id = int(uid)
-                        break
-                
-                if not challenged_id:
-                    await update.message.reply_text("❌ المستخدم غير موجود!")
-                    return
-                
-                if challenged_id == user_id:
-                    await update.message.reply_text("❌ لا يمكنك تحدي نفسك!")
-                    return
-                
-                success = create_challenge(user_id, challenged_id, game_type, bet)
-                if success:
-                    await update.message.reply_text(
-                        f"✅ تم إنشاء التحدي!\n\n"
-                        f"🎮 اللعبة: {game_type}\n"
-                        f"💰 الرهان: {bet} نقطة\n\n"
-                        f"أرسل للكود: {code}\n"
-                        f"ليقبل التحدي: `قبول [كود_التحدي]`"
-                    )
-                else:
-                    await update.message.reply_text("❌ نقاطك غير كافية!")
-        except:
-            await update.message.reply_text("❌ خطأ! الصيغة: `تحدي REF-XXX coin_flip 50`")
+    # جواب
+    if text.startswith("جواب "):
+        answer = text.replace("جواب ", "").strip()
+        
+        # استخدام آخر لعبة لعبها المستخدم
+        sessions = db.load_sessions()
+        user_sessions = [s for s in sessions if s["user_id"] == user_id]
+        
+        if user_sessions:
+            last_game = user_sessions[-1]["game_type"]
+            won, msg, points = play_game(user_id, last_game, answer)
+            await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
+        else:
+            await update.message.reply_text("❌ اختر لعبة أولاً من القائمة!")
         return
     
-    # قبول التحدي
-    if text.startswith("قبول "):
-        try:
-            challenge_id = text.replace("قبول ", "").strip()
-            success, msg = accept_challenge(challenge_id, user_id)
-            await update.message.reply_text(msg)
-        except:
-            await update.message.reply_text("❌ خطأ!")
-        return
-    
-    # اللعب
+    # لعبة مباشرة
     if text.startswith("لعب "):
         try:
-            parts = text.replace("لعب ", "").split()
-            if len(parts) >= 2:
-                game_type = parts[0]
-                move = parts[1]
-                
-                # البحث عن مباراة نشطة
-                active = get_active_matches(user_id)
-                if active:
-                    match = active[0]
-                    success, msg = play_pvp_match(match.id, user_id, move)
-                    await update.message.reply_text(msg)
-                    
-                    if match.status == "completed":
-                        player1 = get_user(match.player1_id)
-                        player2 = get_user(match.player2_id)
-                        
-                        result_text = f"⚔️ النتيجة:\n"
-                        result_text += f"{player1.first_name}: {match.player1_move}\n"
-                        result_text += f"{player2.first_name}: {match.player2_move}\n\n"
-                        result_text += match.ai_judge_comment
-                        
-                        await update.message.reply_text(result_text)
-                else:
-                    await update.message.reply_text("❌ لا توجد مباريات نشطة!")
-        except:
-            await update.message.reply_text("❌ خطأ! الصيغة: `لعب coin_flip head`")
-        return
-    
-    # عشوائي
-    if text.startswith("عشوائي "):
-        try:
-            parts = text.replace("عشوائي ", "").split()
+            parts = text.replace("لعب ", "").split(" ", 1)
             game_type = parts[0]
-            bet = int(parts[1]) if len(parts) > 1 else 50
+            answer = parts[1] if len(parts) > 1 else ""
             
-            await update.message.reply_text(
-                f"🔍 جاري البحث عن خصم...\n\n"
-                f"اللعبة: {game_type}\n"
-                f"الرهان: {bet} نقطة\n\n"
-                "(هذه الميزة تحتاج تطوير إضافي)"
-            )
+            if game_type in GAMES:
+                won, msg, points = play_game(user_id, game_type, answer)
+                await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
+            else:
+                await update.message.reply_text("❌ اللعبة غير موجودة!")
         except:
-            await update.message.reply_text("❌ خطأ! الصيغة: `عشوائي coin_flip 50`")
+            await update.message.reply_text("❌ الصيغة: `لعب puzzle إجابتك`")
         return
     
-    # بطاقة
-    if text.startswith("بطولة "):
-        try:
-            parts = text.replace("بطولة ", "").split()
-            if len(parts) >= 4:
-                name = parts[0]
-                game_type = parts[1]
-                max_players = int(parts[2])
-                entry_fee = int(parts[3])
-                
-                tournament = create_tournament(name, game_type, max_players, entry_fee)
-                await update.message.reply_text(
-                    f"✅ تم إنشاء锦标赛!\n\n"
-                    f"الاسم: {name}\n"
-                    f"اللعبة: {game_type}\n"
-                    f"الحد: {max_players}\n"
-                    f"الرسوم: {entry_fee}\n\n"
-                    f"انضم: `انضم {tournament.id}`"
-                )
-        except:
-            await update.message.reply_text("❌ خطأ!")
+    # لغز
+    if text == "لغز" or text == "🧩":
+        puzzle = get_puzzle("medium")
+        await update.message.reply_text(
+            f"🧩 لغز\n\n{puzzle['question']}\n\nأرسل: جواب [إجابتك]",
+            reply_markup=back_keyboard()
+        )
         return
     
-    # انضم
-    if text.startswith("انضم "):
-        try:
-            tournament_id = text.replace("انضم ", "").strip()
-            success, msg = join_tournament(tournament_id, user_id)
-            await update.message.reply_text(msg)
-        except:
-            await update.message.reply_text("❌ خطأ!")
+    # سؤال
+    if text == "سؤال" or text == "❓":
+        quiz = get_quiz_question("medium")
+        options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(quiz['options'])])
+        await update.message.reply_text(
+            f"❓ سؤال\n\n{quiz['question']}\n\n{options_text}\n\nأرسل: جواب [رقم]",
+            reply_markup=back_keyboard()
+        )
+        return
+    
+    # مكافأة
+    if text == "مكافأة" or text == "🎁":
+        success, msg = get_daily_bonus(user_id)
+        await update.message.reply_text(msg, reply_markup=main_menu_keyboard(user_id))
+        return
+    
+    # إحصائيات
+    if text == "إحصائيات" or text == "📊":
+        stats = get_user_stats(user_id)
+        await update.message.reply_text(stats, reply_markup=main_menu_keyboard(user_id))
         return
     
     await update.message.reply_text("❌ أمر غير معروف!\n\n/start", reply_markup=main_menu_keyboard(user_id))
@@ -933,17 +777,31 @@ def main():
     app = Application.builder().token(config.BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("pvp", pvp_command))
-    app.add_handler(CommandHandler("تحدي", challenge_command))
-    app.add_handler(CommandHandler("leaderboard", leaderboard_command))
-    app.add_handler(CommandHandler("lb", leaderboard_command))
-    app.add_handler(CommandHandler("tournament", tournament_command))
-    app.add_handler(CommandHandler("بطولة", lambda u, c: u.message.reply_text("استخدم: `بطولة [الاسم] [اللعبة] [الحد] [الرسوم]`")))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("games", games_menu_command))
+    app.add_handler(CommandHandler("bonus", bonus_command))
+    app.add_handler(CommandHandler("help", lambda u, c: u.message.reply_text("""الأوامر:
+/start - بدء
+/stats - إحصائياتك
+/games - الألعاب
+/bonus - مكافأة يومية
+
+الألعاب:
+لعب puzzle إجابتك
+لعب quiz 1
+لغز
+سؤال
+
+النقاط:
+• كل لعبة: 10+ نقاط
+• الفوز: +20 نقطة
+• السلسلة: +5 لكل سلسلة
+"""))
     
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(handle_message))
     
-    print("⚔️ PvP Games Bot is running...")
+    print("🎮 Smart Game Bot is running...")
     app.run_polling(allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
